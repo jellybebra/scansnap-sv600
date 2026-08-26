@@ -1,30 +1,40 @@
 diff --git a/backend/fujitsu.c b/backend/fujitsu.c
-index 64eb90f..ed868af 100644
+index 64eb90f..475e1c4 100644
 --- a/backend/fujitsu.c
 +++ b/backend/fujitsu.c
-@@ -2174,0 +2175,10 @@ init_model (struct fujitsu *s)
+@@ -2174,0 +2175,20 @@ init_model (struct fujitsu *s)
 +  /* The SV600 rejects the generic SET WINDOW probes used to discover color
 +   * interlacing.  Its firmware accepts dot-interleaved RGB, so declare that
 +   * format up front and let init_interlace() return immediately.
 +   */
 +  if (strstr (s->model_name, "SV600")) {
++    /* The inquiry data advertises a larger optical area than the firmware
++     * accepts in SET WINDOW.  Cap the public flatbed geometry to the A3 area
++     * supported by ScanSnap Home so GUI frontends can safely request max.
++     */
++    s->max_x = FIXED_MM_TO_SCANNER_UNIT (SANE_FIX (432.0));
++    s->max_y = FIXED_MM_TO_SCANNER_UNIT (SANE_FIX (300.0));
++    s->max_x_fb = s->max_x;
++    s->max_y_fb = s->max_y;
++    s->max_y_by_res[0].len = s->max_y;
++
 +    s->color_interlace = COLOR_INTERLACE_RGB;
 +    s->duplex_interlace = DUPLEX_INTERLACE_NONE;
 +    s->reverse_by_mode[MODE_COLOR] = 0;
 +  }
 +
-@@ -2177 +2187 @@ init_model (struct fujitsu *s)
+@@ -2177 +2197 @@ init_model (struct fujitsu *s)
 -  if (strstr (s->model_name, "M3091")
 +  else if (strstr (s->model_name, "M3091")
-@@ -6732 +6742,4 @@ mode_select_auto (struct fujitsu *s)
+@@ -6732 +6752,4 @@ mode_select_auto (struct fujitsu *s)
 -  set_MSEL_overscan(page, s->overscan);
 +  if (strstr(s->model_name, "SV600"))
 +    set_MSEL_overscan(page, MSEL_ON);
 +  else
 +    set_MSEL_overscan(page, s->overscan);
-@@ -6952,0 +6966 @@ sane_start (SANE_Handle handle)
+@@ -6952,0 +6976 @@ sane_start (SANE_Handle handle)
 +  int is_sv600 = strstr(s->model_name, "SV600") != NULL;
-@@ -7019,0 +7034,10 @@ sane_start (SANE_Handle handle)
+@@ -7019,0 +7044,10 @@ sane_start (SANE_Handle handle)
 +      /* The SV600 performs this preparation before MODE SELECT, SET WINDOW,
 +       * and SCAN in the original driver. */
 +      if (is_sv600) {
@@ -35,7 +45,7 @@ index 64eb90f..ed868af 100644
 +        }
 +      }
 +
-@@ -7025,4 +7049,14 @@ sane_start (SANE_Handle handle)
+@@ -7025,4 +7059,14 @@ sane_start (SANE_Handle handle)
 -      /* enable double feed detection */
 -      ret = mode_select_df(s);
 -      if (ret != SANE_STATUS_GOOD)
@@ -54,7 +64,7 @@ index 64eb90f..ed868af 100644
 +        ret = mode_select_df(s);
 +        if (ret != SANE_STATUS_GOOD)
 +          DBG (5, "sane_start: WARNING: cannot mode_select_df %d\n", ret);
-@@ -7030,4 +7064,4 @@ sane_start (SANE_Handle handle)
+@@ -7030,4 +7074,4 @@ sane_start (SANE_Handle handle)
 -      /* enable background color setting */
 -      ret = mode_select_bg(s);
 -      if (ret != SANE_STATUS_GOOD)
@@ -63,7 +73,7 @@ index 64eb90f..ed868af 100644
 +        ret = mode_select_bg(s);
 +        if (ret != SANE_STATUS_GOOD)
 +          DBG (5, "sane_start: WARNING: cannot mode_select_bg %d\n", ret);
-@@ -7035,4 +7069,4 @@ sane_start (SANE_Handle handle)
+@@ -7035,4 +7079,4 @@ sane_start (SANE_Handle handle)
 -      /* enable dropout color setting */
 -      ret = mode_select_dropout(s);
 -      if (ret != SANE_STATUS_GOOD)
@@ -72,7 +82,7 @@ index 64eb90f..ed868af 100644
 +        ret = mode_select_dropout(s);
 +        if (ret != SANE_STATUS_GOOD)
 +          DBG (5, "sane_start: WARNING: cannot mode_select_dropout %d\n", ret);
-@@ -7040,4 +7074,4 @@ sane_start (SANE_Handle handle)
+@@ -7040,4 +7084,4 @@ sane_start (SANE_Handle handle)
 -      /* enable buffering setting */
 -      ret = mode_select_buff(s);
 -      if (ret != SANE_STATUS_GOOD)
@@ -81,7 +91,7 @@ index 64eb90f..ed868af 100644
 +        ret = mode_select_buff(s);
 +        if (ret != SANE_STATUS_GOOD)
 +          DBG (5, "sane_start: WARNING: cannot mode_select_buff %d\n", ret);
-@@ -7045,4 +7079,4 @@ sane_start (SANE_Handle handle)
+@@ -7045,4 +7089,4 @@ sane_start (SANE_Handle handle)
 -      /* enable prepick setting */
 -      ret = mode_select_prepick(s);
 -      if (ret != SANE_STATUS_GOOD)
@@ -90,7 +100,7 @@ index 64eb90f..ed868af 100644
 +        ret = mode_select_prepick(s);
 +        if (ret != SANE_STATUS_GOOD)
 +          DBG (5, "sane_start: WARNING: cannot mode_select_prepick %d\n", ret);
-@@ -7050,4 +7084,5 @@ sane_start (SANE_Handle handle)
+@@ -7050,4 +7094,5 @@ sane_start (SANE_Handle handle)
 -      /* send endorser config */
 -      ret = send_endorser(s);
 -      if (ret != SANE_STATUS_GOOD)
@@ -100,13 +110,13 @@ index 64eb90f..ed868af 100644
 +        if (ret != SANE_STATUS_GOOD)
 +          DBG (5, "sane_start: WARNING: cannot send_endorser %d\n", ret);
 +      }
-@@ -7063 +7098 @@ sane_start (SANE_Handle handle)
+@@ -7063 +7108 @@ sane_start (SANE_Handle handle)
 -      if ( s->window_gamma ){
 +      if (s->window_gamma && !is_sv600){
-@@ -7070 +7105 @@ sane_start (SANE_Handle handle)
+@@ -7070 +7115 @@ sane_start (SANE_Handle handle)
 -      if (s->need_q_table){
 +      if (s->need_q_table && !is_sv600){
-@@ -7077,4 +7112,6 @@ sane_start (SANE_Handle handle)
+@@ -7077,4 +7122,6 @@ sane_start (SANE_Handle handle)
 -      ret = endorser(s);
 -      if (ret != SANE_STATUS_GOOD) {
 -        DBG (5, "sane_start: ERROR: cannot start/stop endorser\n");
@@ -117,7 +127,7 @@ index 64eb90f..ed868af 100644
 +          DBG (5, "sane_start: ERROR: cannot start/stop endorser\n");
 +          goto errors;
 +        }
-@@ -7084,3 +7121,5 @@ sane_start (SANE_Handle handle)
+@@ -7084,3 +7131,5 @@ sane_start (SANE_Handle handle)
 -      ret = scanner_control(s, SC_function_lamp_on);
 -      if (ret != SANE_STATUS_GOOD) {
 -        DBG (5, "sane_start: WARNING: cannot start lamp, ignoring\n");
@@ -126,22 +136,22 @@ index 64eb90f..ed868af 100644
 +        if (ret != SANE_STATUS_GOOD) {
 +          DBG (5, "sane_start: WARNING: cannot start lamp, ignoring\n");
 +        }
-@@ -7143,0 +7183,6 @@ sane_start (SANE_Handle handle)
+@@ -7143,0 +7193,6 @@ sane_start (SANE_Handle handle)
 +      /* The Windows driver enforces a model-specific class-1 settling time
 +       * after SET WINDOW and before SCAN.  A conservative half-second delay
 +       * avoids racing the SV600 illumination mechanics. */
 +      if (is_sv600)
 +        usleep(500000);
 +
-@@ -7522,0 +7568 @@ set_window (struct fujitsu *s)
+@@ -7522,0 +7578 @@ set_window (struct fujitsu *s)
 +  int is_sv600 = strstr(s->model_name, "SV600") != NULL;
-@@ -7539,0 +7586 @@ set_window (struct fujitsu *s)
+@@ -7539,0 +7596 @@ set_window (struct fujitsu *s)
 +  int width = 0;
-@@ -7569 +7616,2 @@ set_window (struct fujitsu *s)
+@@ -7569 +7626,2 @@ set_window (struct fujitsu *s)
 -  set_WD_width (desc1, s->s_params.pixels_per_line * 1200/s->resolution_x);
 +  width = s->s_params.pixels_per_line * 1200/s->resolution_x;
 +  set_WD_width (desc1, width);
-@@ -7742,2 +7790,17 @@ set_window (struct fujitsu *s)
+@@ -7742,2 +7800,17 @@ set_window (struct fujitsu *s)
 -  /* common to all vuids */
 -  if(s->source == SOURCE_FLATBED){
 +  /* The SV600 Windows minidriver's SendSWDData() emits a Comet-specific
@@ -161,7 +171,7 @@ index 64eb90f..ed868af 100644
 +
 +  /* common to all other vuids */
 +  else if(s->source == SOURCE_FLATBED){
-@@ -7948,0 +8012,120 @@ object_position (struct fujitsu *s, int action)
+@@ -7948,0 +8022,120 @@ object_position (struct fujitsu *s, int action)
 +static SANE_Status
 +sv600_send_diagnostic (struct fujitsu *s, const char *name,
 +                       const unsigned char *payload, size_t payload_len)
