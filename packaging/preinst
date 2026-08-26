@@ -1,0 +1,16 @@
+#!/bin/sh
+set -eu
+
+target=/usr/lib/x86_64-linux-gnu/sane/libsane-fujitsu.so.1
+diverted=${target}.distrib
+
+case "${1:-}" in
+    install|upgrade)
+        if ! dpkg-divert --list "$target" | grep -Fq "$diverted"; then
+            dpkg-divert --package scansnap-sv600-sane \
+                --add --rename --divert "$diverted" "$target"
+        fi
+        ;;
+esac
+
+exit 0

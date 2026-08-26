@@ -1,0 +1,291 @@
+diff --git a/backend/fujitsu.c b/backend/fujitsu.c
+index 64eb90f..ed868af 100644
+--- a/backend/fujitsu.c
++++ b/backend/fujitsu.c
+@@ -2174,0 +2175,10 @@ init_model (struct fujitsu *s)
++  /* The SV600 rejects the generic SET WINDOW probes used to discover color
++   * interlacing.  Its firmware accepts dot-interleaved RGB, so declare that
++   * format up front and let init_interlace() return immediately.
++   */
++  if (strstr (s->model_name, "SV600")) {
++    s->color_interlace = COLOR_INTERLACE_RGB;
++    s->duplex_interlace = DUPLEX_INTERLACE_NONE;
++    s->reverse_by_mode[MODE_COLOR] = 0;
++  }
++
+@@ -2177 +2187 @@ init_model (struct fujitsu *s)
+-  if (strstr (s->model_name, "M3091")
++  else if (strstr (s->model_name, "M3091")
+@@ -6732 +6742,4 @@ mode_select_auto (struct fujitsu *s)
+-  set_MSEL_overscan(page, s->overscan);
++  if (strstr(s->model_name, "SV600"))
++    set_MSEL_overscan(page, MSEL_ON);
++  else
++    set_MSEL_overscan(page, s->overscan);
+@@ -6952,0 +6966 @@ sane_start (SANE_Handle handle)
++  int is_sv600 = strstr(s->model_name, "SV600") != NULL;
+@@ -7019,0 +7034,10 @@ sane_start (SANE_Handle handle)
++      /* The SV600 performs this preparation before MODE SELECT, SET WINDOW,
++       * and SCAN in the original driver. */
++      if (is_sv600) {
++        ret = sv600_prepare_scan(s);
++        if (ret != SANE_STATUS_GOOD) {
++          DBG (5, "sane_start: ERROR: cannot prepare SV600 scan %d\n", ret);
++          goto errors;
++        }
++      }
++
+@@ -7025,4 +7049,14 @@ sane_start (SANE_Handle handle)
+-      /* enable double feed detection */
+-      ret = mode_select_df(s);
+-      if (ret != SANE_STATUS_GOOD)
+-        DBG (5, "sane_start: WARNING: cannot mode_select_df %d\n", ret);
++      if (is_sv600) {
++        /* The original SV600 minidriver turns the lamp on between MODE
++         * SELECT page 3c and SET WINDOW.  It does not send the generic
++         * feeder MODE SELECT pages (notably page 3a) in this path. */
++        ret = scanner_control(s, SC_function_lamp_on);
++        if (ret != SANE_STATUS_GOOD) {
++          DBG (5, "sane_start: WARNING: cannot start SV600 lamp, ignoring\n");
++        }
++      }
++      else {
++        /* enable double feed detection */
++        ret = mode_select_df(s);
++        if (ret != SANE_STATUS_GOOD)
++          DBG (5, "sane_start: WARNING: cannot mode_select_df %d\n", ret);
+@@ -7030,4 +7064,4 @@ sane_start (SANE_Handle handle)
+-      /* enable background color setting */
+-      ret = mode_select_bg(s);
+-      if (ret != SANE_STATUS_GOOD)
+-        DBG (5, "sane_start: WARNING: cannot mode_select_bg %d\n", ret);
++        /* enable background color setting */
++        ret = mode_select_bg(s);
++        if (ret != SANE_STATUS_GOOD)
++          DBG (5, "sane_start: WARNING: cannot mode_select_bg %d\n", ret);
+@@ -7035,4 +7069,4 @@ sane_start (SANE_Handle handle)
+-      /* enable dropout color setting */
+-      ret = mode_select_dropout(s);
+-      if (ret != SANE_STATUS_GOOD)
+-        DBG (5, "sane_start: WARNING: cannot mode_select_dropout %d\n", ret);
++        /* enable dropout color setting */
++        ret = mode_select_dropout(s);
++        if (ret != SANE_STATUS_GOOD)
++          DBG (5, "sane_start: WARNING: cannot mode_select_dropout %d\n", ret);
+@@ -7040,4 +7074,4 @@ sane_start (SANE_Handle handle)
+-      /* enable buffering setting */
+-      ret = mode_select_buff(s);
+-      if (ret != SANE_STATUS_GOOD)
+-        DBG (5, "sane_start: WARNING: cannot mode_select_buff %d\n", ret);
++        /* enable buffering setting */
++        ret = mode_select_buff(s);
++        if (ret != SANE_STATUS_GOOD)
++          DBG (5, "sane_start: WARNING: cannot mode_select_buff %d\n", ret);
+@@ -7045,4 +7079,4 @@ sane_start (SANE_Handle handle)
+-      /* enable prepick setting */
+-      ret = mode_select_prepick(s);
+-      if (ret != SANE_STATUS_GOOD)
+-        DBG (5, "sane_start: WARNING: cannot mode_select_prepick %d\n", ret);
++        /* enable prepick setting */
++        ret = mode_select_prepick(s);
++        if (ret != SANE_STATUS_GOOD)
++          DBG (5, "sane_start: WARNING: cannot mode_select_prepick %d\n", ret);
+@@ -7050,4 +7084,5 @@ sane_start (SANE_Handle handle)
+-      /* send endorser config */
+-      ret = send_endorser(s);
+-      if (ret != SANE_STATUS_GOOD)
+-        DBG (5, "sane_start: WARNING: cannot send_endorser %d\n", ret);
++        /* send endorser config */
++        ret = send_endorser(s);
++        if (ret != SANE_STATUS_GOOD)
++          DBG (5, "sane_start: WARNING: cannot send_endorser %d\n", ret);
++      }
+@@ -7063 +7098 @@ sane_start (SANE_Handle handle)
+-      if ( s->window_gamma ){
++      if (s->window_gamma && !is_sv600){
+@@ -7070 +7105 @@ sane_start (SANE_Handle handle)
+-      if (s->need_q_table){
++      if (s->need_q_table && !is_sv600){
+@@ -7077,4 +7112,6 @@ sane_start (SANE_Handle handle)
+-      ret = endorser(s);
+-      if (ret != SANE_STATUS_GOOD) {
+-        DBG (5, "sane_start: ERROR: cannot start/stop endorser\n");
+-        goto errors;
++      if (!is_sv600) {
++        ret = endorser(s);
++        if (ret != SANE_STATUS_GOOD) {
++          DBG (5, "sane_start: ERROR: cannot start/stop endorser\n");
++          goto errors;
++        }
+@@ -7084,3 +7121,5 @@ sane_start (SANE_Handle handle)
+-      ret = scanner_control(s, SC_function_lamp_on);
+-      if (ret != SANE_STATUS_GOOD) {
+-        DBG (5, "sane_start: WARNING: cannot start lamp, ignoring\n");
++      if (!is_sv600) {
++        ret = scanner_control(s, SC_function_lamp_on);
++        if (ret != SANE_STATUS_GOOD) {
++          DBG (5, "sane_start: WARNING: cannot start lamp, ignoring\n");
++        }
+@@ -7143,0 +7183,6 @@ sane_start (SANE_Handle handle)
++      /* The Windows driver enforces a model-specific class-1 settling time
++       * after SET WINDOW and before SCAN.  A conservative half-second delay
++       * avoids racing the SV600 illumination mechanics. */
++      if (is_sv600)
++        usleep(500000);
++
+@@ -7522,0 +7568 @@ set_window (struct fujitsu *s)
++  int is_sv600 = strstr(s->model_name, "SV600") != NULL;
+@@ -7539,0 +7586 @@ set_window (struct fujitsu *s)
++  int width = 0;
+@@ -7569 +7616,2 @@ set_window (struct fujitsu *s)
+-  set_WD_width (desc1, s->s_params.pixels_per_line * 1200/s->resolution_x);
++  width = s->s_params.pixels_per_line * 1200/s->resolution_x;
++  set_WD_width (desc1, width);
+@@ -7742,2 +7790,17 @@ set_window (struct fujitsu *s)
+-  /* common to all vuids */
+-  if(s->source == SOURCE_FLATBED){
++  /* The SV600 Windows minidriver's SendSWDData() emits a Comet-specific
++   * extension.  The base descriptor above is already in the required
++   * 1/1200-inch units; these fields are the exact remaining differences.
++   */
++  if (is_sv600) {
++    set_WD_rif(desc1, 1);
++    set_WD_vendor_id_code(desc1, WD_VUID_COLOR);
++    set_WD_gamma(desc1, 0x80);
++    set_WD_scanning_order(desc1, WD_SCAN_ORDER_DOT);
++    set_WD_scanning_order_arg(desc1, WD_SCAN_ARG_RGB);
++    set_WD_paper_selection(desc1, WD_paper_SEL_NON_STANDARD);
++    set_WD_paper_width_X(desc1, width);
++    set_WD_paper_length_Y(desc1, length);
++  }
++
++  /* common to all other vuids */
++  else if(s->source == SOURCE_FLATBED){
+@@ -7948,0 +8012,120 @@ object_position (struct fujitsu *s, int action)
++static SANE_Status
++sv600_send_diagnostic (struct fujitsu *s, const char *name,
++                       const unsigned char *payload, size_t payload_len)
++{
++  SANE_Status ret;
++  unsigned char cmd[SEND_DIAGNOSTIC_len];
++  unsigned char out[32];
++  size_t cmdLen = SEND_DIAGNOSTIC_len;
++  size_t outLen = 16 + payload_len;
++
++  if (outLen > sizeof(out))
++    return SANE_STATUS_INVAL;
++
++  memset(cmd, 0, cmdLen);
++  set_SCSI_opcode(cmd, SEND_DIAGNOSTIC_code);
++  set_SD_slftst(cmd, 0);
++  set_SD_xferlen(cmd, outLen);
++
++  memset(out, ' ', 16);
++  memcpy(out, name, strlen(name) < 16 ? strlen(name) : 16);
++  if (payload_len)
++    memcpy(out + 16, payload, payload_len);
++
++  DBG (15, "sv600_send_diagnostic: %.16s (%lu bytes)\n",
++       name, (unsigned long)outLen);
++
++  ret = do_cmd (
++    s, 1, 0,
++    cmd, cmdLen,
++    out, outLen,
++    NULL, NULL
++  );
++
++  return ret;
++}
++
++static SANE_Status
++sv600_send_lut (struct fujitsu *s)
++{
++  SANE_Status ret;
++  unsigned char cmd[SEND_len];
++  unsigned char out[S_lut_header_len + S_lut_data_min_len];
++  size_t cmdLen = SEND_len;
++  size_t outLen = sizeof(out);
++  int i;
++
++  memset(cmd, 0, cmdLen);
++  set_SCSI_opcode(cmd, SEND_code);
++  set_S_xfer_datatype(cmd, S_datatype_lut_data);
++  set_S_xfer_length(cmd, outLen);
++
++  memset(out, 0, outLen);
++  set_S_lut_order(out, S_lut_order_single);
++  set_S_lut_ssize(out, S_lut_data_min_len);
++  set_S_lut_dsize(out, 256);
++
++  /* The SV600 firmware requires a downloaded 8-bit LUT even though its
++   * inquiry data reports no downloadable gamma tables.  The Windows driver
++   * sends this neutral table on every scan. */
++  for (i = 0; i < S_lut_data_min_len; i++)
++    out[S_lut_header_len + i] = i;
++
++  DBG (10, "sv600_send_lut: start\n");
++  ret = do_cmd (
++    s, 1, 0,
++    cmd, cmdLen,
++    out, outLen,
++    NULL, NULL
++  );
++  DBG (10, "sv600_send_lut: finish %d\n", ret);
++
++  return ret;
++}
++
++static SANE_Status
++sv600_prepare_scan (struct fujitsu *s)
++{
++  static const unsigned char scan_mode[] = {0x20, 0x00, 0x00};
++  static const unsigned char ir_on[] = {0x01};
++  static const unsigned char ir_off[] = {0x00};
++  SANE_Status ret;
++
++  if (!strstr(s->model_name, "SV600"))
++    return SANE_STATUS_GOOD;
++
++  DBG (10, "sv600_prepare_scan: start\n");
++
++  ret = sv600_send_diagnostic(s, "SET SCAN MODE", scan_mode,
++                              sizeof(scan_mode));
++  if (ret != SANE_STATUS_GOOD) {
++    DBG (5, "sv600_prepare_scan: SET SCAN MODE failed: %d\n", ret);
++    return ret;
++  }
++
++  ret = sv600_send_diagnostic(s, "CHANGE IRLED", ir_on, sizeof(ir_on));
++  if (ret != SANE_STATUS_GOOD) {
++    DBG (5, "sv600_prepare_scan: CHANGE IRLED on failed: %d\n", ret);
++    return ret;
++  }
++
++  /* The Windows driver lets the positioning camera settle while the
++   * infrared reference light is on, then turns it off before SCAN. */
++  usleep(1500000);
++
++  ret = sv600_send_diagnostic(s, "CHANGE IRLED", ir_off, sizeof(ir_off));
++  if (ret != SANE_STATUS_GOOD) {
++    DBG (5, "sv600_prepare_scan: CHANGE IRLED off failed: %d\n", ret);
++    return ret;
++  }
++
++  ret = sv600_send_lut(s);
++  if (ret != SANE_STATUS_GOOD) {
++    DBG (5, "sv600_prepare_scan: SEND LUT failed: %d\n", ret);
++    return ret;
++  }
++
++  DBG (10, "sv600_prepare_scan: finish\n");
++  return SANE_STATUS_GOOD;
++}
++
+diff --git a/backend/fujitsu.h b/backend/fujitsu.h
+index 6c42ff8..e47b03c 100644
+--- a/backend/fujitsu.h
++++ b/backend/fujitsu.h
+@@ -812,0 +813,2 @@ static SANE_Status mode_select_auto (struct fujitsu *s);
++static SANE_Status sv600_prepare_scan (struct fujitsu *s);
++

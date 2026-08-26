@@ -1,0 +1,5 @@
+# ScanSnap SV600 high-resolution scanner interface
+SUBSYSTEM=="usb", ATTR{idVendor}=="04c5", ATTR{idProduct}=="128e", MODE="0660", GROUP="scanner", ENV{libsane_matched}="yes", TAG+="uaccess"
+
+# ScanSnap SV600 positioning/automatic-exposure camera
+SUBSYSTEM=="usb", ATTR{idVendor}=="04c5", ATTR{idProduct}=="13ba", MODE="0660", GROUP="video", TAG+="uaccess"

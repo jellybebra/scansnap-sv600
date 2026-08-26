@@ -1,0 +1,130 @@
+name: Build and release Astra package
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+jobs:
+  commits:
+    runs-on: ubuntu-latest
+    outputs:
+      list: ${{ steps.list.outputs.commits }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: List every new commit in this push
+        id: list
+        shell: bash
+        env:
+          BEFORE_SHA: ${{ github.event.before }}
+          AFTER_SHA: ${{ github.sha }}
+        run: |
+          if [[ "$BEFORE_SHA" =~ ^0+$ ]]; then
+            range="$AFTER_SHA"
+          else
+            range="$BEFORE_SHA..$AFTER_SHA"
+          fi
+          commits="$(git rev-list --reverse "$range" |
+            jq -R -s -c 'split("\n") | map(select(length > 0))')"
+          echo "commits=$commits" >> "$GITHUB_OUTPUT"
+
+  release:
+    needs: commits
+    strategy:
+      fail-fast: false
+      matrix:
+        commit: ${{ fromJSON(needs.commits.outputs.list) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out commit
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ matrix.commit }}
+
+      - name: Set package version
+        shell: bash
+        env:
+          COMMIT_SHA: ${{ matrix.commit }}
+        run: |
+          short_sha="${COMMIT_SHA::8}"
+          echo "VERSION=0.1.0+git${GITHUB_RUN_NUMBER}.${short_sha}" >> "$GITHUB_ENV"
+          echo "TAG=build-${GITHUB_RUN_NUMBER}-${short_sha}" >> "$GITHUB_ENV"
+
+      - name: Build Debian 10 and Astra compatible package
+        shell: bash
+        run: |
+          docker run --rm \
+            --env VERSION \
+            --volume "$GITHUB_WORKSPACE:/workspace" \
+            --workdir /workspace \
+            debian:buster-slim \
+            sh -euxc '
+              printf "%s\n" \
+                "deb http://archive.debian.org/debian buster main" \
+                "deb http://archive.debian.org/debian-security buster/updates main" \
+                > /etc/apt/sources.list
+              printf "%s\n" "Acquire::Check-Valid-Until \"false\";" \
+                > /etc/apt/apt.conf.d/99archive
+              apt-get update
+              DEBIAN_FRONTEND=noninteractive apt-get install --yes \
+                autoconf autoconf-archive automake autopoint build-essential \
+                ca-certificates dpkg-dev gettext git libtool \
+                libusb-1.0-0-dev pkg-config python3
+              ./packaging/build-deb.sh
+            '
+
+      - name: Verify package
+        shell: bash
+        run: |
+          deb="$(find dist -maxdepth 1 -name '*.deb' -print -quit)"
+          test -s "$deb"
+          dpkg-deb --info "$deb"
+          verify_root="$(mktemp -d)"
+          trap 'rm -rf "$verify_root"' EXIT
+          dpkg-deb --extract "$deb" "$verify_root"
+          backend="$verify_root/usr/lib/x86_64-linux-gnu/sane/libsane-sv600-fujitsu.so.1"
+          test -s "$backend"
+          readelf -d "$backend"
+          max_glibc="$(
+            objdump -T "$backend" 2>/dev/null |
+              grep -oE 'GLIBC_[0-9]+\.[0-9]+' |
+              sort -Vu |
+              tail -1
+          )"
+          echo "Maximum required glibc symbol: $max_glibc"
+          test -n "$max_glibc"
+          if dpkg --compare-versions "${max_glibc#GLIBC_}" gt "2.28"; then
+            echo "Backend requires newer glibc than Astra Linux supports" >&2
+            exit 1
+          fi
+          sha256sum "$deb"
+
+      - name: Publish release for this commit
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          COMMIT_SHA: ${{ matrix.commit }}
+        run: |
+          deb="$(find dist -maxdepth 1 -name '*.deb' -print -quit)"
+          sha256="$(sha256sum "$deb" | awk '{print $1}')"
+          gh release create "$TAG" "$deb" \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$COMMIT_SHA" \
+            --title "ScanSnap SV600 ${VERSION}" \
+            --latest \
+            --notes "Автоматическая сборка для Astra Linux amd64.
+
+          Установка:
+          \`\`\`bash
+          sudo apt install ./$(basename "$deb")
+          \`\`\`
+
+          SHA-256: \`${sha256}\`"

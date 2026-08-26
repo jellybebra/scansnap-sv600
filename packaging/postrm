@@ -1,0 +1,20 @@
+#!/bin/sh
+set -eu
+
+target=/usr/lib/x86_64-linux-gnu/sane/libsane-fujitsu.so.1
+diverted=${target}.distrib
+
+case "${1:-}" in
+    remove|purge|abort-install)
+        if [ -L "$target" ] &&
+           [ "$(readlink "$target")" = "libsane-sv600-fujitsu.so.1" ]; then
+            rm -f "$target"
+        fi
+        if dpkg-divert --list "$target" | grep -Fq "$diverted"; then
+            dpkg-divert --package scansnap-sv600-sane \
+                --remove --rename --divert "$diverted" "$target"
+        fi
+        ;;
+esac
+
+exit 0
