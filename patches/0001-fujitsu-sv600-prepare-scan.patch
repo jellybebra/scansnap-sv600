@@ -1,5 +1,5 @@
 diff --git a/backend/fujitsu.c b/backend/fujitsu.c
-index 64eb90f..b5c01c1 100644
+index 64eb90f..905b659 100644
 --- a/backend/fujitsu.c
 +++ b/backend/fujitsu.c
 @@ -741,0 +742 @@
@@ -48,14 +48,15 @@ index 64eb90f..b5c01c1 100644
 +    set_MSEL_overscan(page, MSEL_ON);
 +  else
 +    set_MSEL_overscan(page, s->overscan);
-@@ -6952,0 +6990,6 @@ sane_start (SANE_Handle handle)
+@@ -6952,0 +6990,7 @@ sane_start (SANE_Handle handle)
 +  int is_sv600 = strstr(s->model_name, "SV600") != NULL;
 +  int sv600_full_frame = 0;
++  int sv600_requested_portrait = 0;
 +  int saved_tl_x = 0;
 +  int saved_tl_y = 0;
 +  int saved_br_x = 0;
 +  int saved_br_y = 0;
-@@ -6987,0 +7031,16 @@ sane_start (SANE_Handle handle)
+@@ -6987,0 +7032,20 @@ sane_start (SANE_Handle handle)
 +      /* Frontends such as Simple Scan express A4 as a portrait scan window.
 +       * That window clips a physically landscape page before software can
 +       * discover its orientation.  Acquire the whole SV600 mat internally;
@@ -65,6 +66,10 @@ index 64eb90f..b5c01c1 100644
 +        saved_tl_y = s->tl_y;
 +        saved_br_x = s->br_x;
 +        saved_br_y = s->br_y;
++        sv600_requested_portrait = saved_br_y - saved_tl_y
++          > saved_br_x - saved_tl_x;
++        DBG (15, "sane_start: SV600 requested orientation=%s\n",
++             sv600_requested_portrait ? "portrait" : "landscape");
 +        s->tl_x = 0;
 +        s->tl_y = 0;
 +        s->br_x = s->max_x;
@@ -72,7 +77,7 @@ index 64eb90f..b5c01c1 100644
 +        sv600_full_frame = 1;
 +      }
 +
-@@ -7019,0 +7079,10 @@ sane_start (SANE_Handle handle)
+@@ -7019,0 +7084,10 @@ sane_start (SANE_Handle handle)
 +      /* The SV600 performs this preparation before MODE SELECT, SET WINDOW,
 +       * and SCAN in the original driver. */
 +      if (is_sv600) {
@@ -83,7 +88,7 @@ index 64eb90f..b5c01c1 100644
 +        }
 +      }
 +
-@@ -7025,4 +7094,14 @@ sane_start (SANE_Handle handle)
+@@ -7025,4 +7099,14 @@ sane_start (SANE_Handle handle)
 -      /* enable double feed detection */
 -      ret = mode_select_df(s);
 -      if (ret != SANE_STATUS_GOOD)
@@ -102,7 +107,7 @@ index 64eb90f..b5c01c1 100644
 +        ret = mode_select_df(s);
 +        if (ret != SANE_STATUS_GOOD)
 +          DBG (5, "sane_start: WARNING: cannot mode_select_df %d\n", ret);
-@@ -7030,4 +7109,4 @@ sane_start (SANE_Handle handle)
+@@ -7030,4 +7114,4 @@ sane_start (SANE_Handle handle)
 -      /* enable background color setting */
 -      ret = mode_select_bg(s);
 -      if (ret != SANE_STATUS_GOOD)
@@ -111,7 +116,7 @@ index 64eb90f..b5c01c1 100644
 +        ret = mode_select_bg(s);
 +        if (ret != SANE_STATUS_GOOD)
 +          DBG (5, "sane_start: WARNING: cannot mode_select_bg %d\n", ret);
-@@ -7035,4 +7114,4 @@ sane_start (SANE_Handle handle)
+@@ -7035,4 +7119,4 @@ sane_start (SANE_Handle handle)
 -      /* enable dropout color setting */
 -      ret = mode_select_dropout(s);
 -      if (ret != SANE_STATUS_GOOD)
@@ -120,7 +125,7 @@ index 64eb90f..b5c01c1 100644
 +        ret = mode_select_dropout(s);
 +        if (ret != SANE_STATUS_GOOD)
 +          DBG (5, "sane_start: WARNING: cannot mode_select_dropout %d\n", ret);
-@@ -7040,4 +7119,4 @@ sane_start (SANE_Handle handle)
+@@ -7040,4 +7124,4 @@ sane_start (SANE_Handle handle)
 -      /* enable buffering setting */
 -      ret = mode_select_buff(s);
 -      if (ret != SANE_STATUS_GOOD)
@@ -129,7 +134,7 @@ index 64eb90f..b5c01c1 100644
 +        ret = mode_select_buff(s);
 +        if (ret != SANE_STATUS_GOOD)
 +          DBG (5, "sane_start: WARNING: cannot mode_select_buff %d\n", ret);
-@@ -7045,4 +7124,4 @@ sane_start (SANE_Handle handle)
+@@ -7045,4 +7129,4 @@ sane_start (SANE_Handle handle)
 -      /* enable prepick setting */
 -      ret = mode_select_prepick(s);
 -      if (ret != SANE_STATUS_GOOD)
@@ -138,7 +143,7 @@ index 64eb90f..b5c01c1 100644
 +        ret = mode_select_prepick(s);
 +        if (ret != SANE_STATUS_GOOD)
 +          DBG (5, "sane_start: WARNING: cannot mode_select_prepick %d\n", ret);
-@@ -7050,4 +7129,5 @@ sane_start (SANE_Handle handle)
+@@ -7050,4 +7134,5 @@ sane_start (SANE_Handle handle)
 -      /* send endorser config */
 -      ret = send_endorser(s);
 -      if (ret != SANE_STATUS_GOOD)
@@ -148,13 +153,13 @@ index 64eb90f..b5c01c1 100644
 +        if (ret != SANE_STATUS_GOOD)
 +          DBG (5, "sane_start: WARNING: cannot send_endorser %d\n", ret);
 +      }
-@@ -7063 +7143 @@ sane_start (SANE_Handle handle)
+@@ -7063 +7148 @@ sane_start (SANE_Handle handle)
 -      if ( s->window_gamma ){
 +      if (s->window_gamma && !is_sv600){
-@@ -7070 +7150 @@ sane_start (SANE_Handle handle)
+@@ -7070 +7155 @@ sane_start (SANE_Handle handle)
 -      if (s->need_q_table){
 +      if (s->need_q_table && !is_sv600){
-@@ -7077,4 +7157,6 @@ sane_start (SANE_Handle handle)
+@@ -7077,4 +7162,6 @@ sane_start (SANE_Handle handle)
 -      ret = endorser(s);
 -      if (ret != SANE_STATUS_GOOD) {
 -        DBG (5, "sane_start: ERROR: cannot start/stop endorser\n");
@@ -165,7 +170,7 @@ index 64eb90f..b5c01c1 100644
 +          DBG (5, "sane_start: ERROR: cannot start/stop endorser\n");
 +          goto errors;
 +        }
-@@ -7084,3 +7166,5 @@ sane_start (SANE_Handle handle)
+@@ -7084,3 +7171,5 @@ sane_start (SANE_Handle handle)
 -      ret = scanner_control(s, SC_function_lamp_on);
 -      if (ret != SANE_STATUS_GOOD) {
 -        DBG (5, "sane_start: WARNING: cannot start lamp, ignoring\n");
@@ -174,14 +179,14 @@ index 64eb90f..b5c01c1 100644
 +        if (ret != SANE_STATUS_GOOD) {
 +          DBG (5, "sane_start: WARNING: cannot start lamp, ignoring\n");
 +        }
-@@ -7143,0 +7228,6 @@ sane_start (SANE_Handle handle)
+@@ -7143,0 +7233,6 @@ sane_start (SANE_Handle handle)
 +      /* The Windows driver enforces a model-specific class-1 settling time
 +       * after SET WINDOW and before SCAN.  A conservative half-second delay
 +       * avoids racing the SV600 illumination mechanics. */
 +      if (is_sv600)
 +        usleep(500000);
 +
-@@ -7245,3 +7335,5 @@ sane_start (SANE_Handle handle)
+@@ -7245,3 +7340,5 @@ sane_start (SANE_Handle handle)
 -    /* finished buffering, adjust image as required */
 -    if(s->swdeskew && (!s->hwdeskewcrop || s->req_driv_crop)){
 -      buffer_deskew(s,s->side);
@@ -189,8 +194,8 @@ index 64eb90f..b5c01c1 100644
 +     * the document corners are known and can clip it against the frame.
 +     * Detect and rectify SV600 pages directly from the untouched full image. */
 +    if(is_sv600 && s->swdeskew && s->swcrop){
-+      buffer_sv600_perspective(s,s->side);
-@@ -7249,2 +7341,7 @@ sane_start (SANE_Handle handle)
++      buffer_sv600_perspective(s,s->side,sv600_requested_portrait);
+@@ -7249,2 +7346,7 @@ sane_start (SANE_Handle handle)
 -    if(s->swcrop && (!s->hwdeskewcrop || s->req_driv_crop)){
 -      buffer_crop(s,s->side);
 +    else {
@@ -200,14 +205,14 @@ index 64eb90f..b5c01c1 100644
 +      if(s->swcrop && (!s->hwdeskewcrop || s->req_driv_crop)){
 +        buffer_crop(s,s->side);
 +      }
-@@ -7262,0 +7360,6 @@ sane_start (SANE_Handle handle)
+@@ -7262,0 +7365,6 @@ sane_start (SANE_Handle handle)
 +        if (sv600_full_frame) {
 +          s->tl_x = saved_tl_x;
 +          s->tl_y = saved_tl_y;
 +          s->br_x = saved_br_x;
 +          s->br_y = saved_br_y;
 +        }
-@@ -7268,0 +7372,7 @@ sane_start (SANE_Handle handle)
+@@ -7268,0 +7377,7 @@ sane_start (SANE_Handle handle)
 +  if (sv600_full_frame) {
 +    s->tl_x = saved_tl_x;
 +    s->tl_y = saved_tl_y;
@@ -215,7 +220,7 @@ index 64eb90f..b5c01c1 100644
 +    s->br_y = saved_br_y;
 +  }
 +
-@@ -7280,0 +7391,7 @@ sane_start (SANE_Handle handle)
+@@ -7280,0 +7396,7 @@ sane_start (SANE_Handle handle)
 +    if (sv600_full_frame) {
 +      s->tl_x = saved_tl_x;
 +      s->tl_y = saved_tl_y;
@@ -223,15 +228,15 @@ index 64eb90f..b5c01c1 100644
 +      s->br_y = saved_br_y;
 +    }
 +
-@@ -7522,0 +7640 @@ set_window (struct fujitsu *s)
+@@ -7522,0 +7645 @@ set_window (struct fujitsu *s)
 +  int is_sv600 = strstr(s->model_name, "SV600") != NULL;
-@@ -7539,0 +7658 @@ set_window (struct fujitsu *s)
+@@ -7539,0 +7663 @@ set_window (struct fujitsu *s)
 +  int width = 0;
-@@ -7569 +7688,2 @@ set_window (struct fujitsu *s)
+@@ -7569 +7693,2 @@ set_window (struct fujitsu *s)
 -  set_WD_width (desc1, s->s_params.pixels_per_line * 1200/s->resolution_x);
 +  width = s->s_params.pixels_per_line * 1200/s->resolution_x;
 +  set_WD_width (desc1, width);
-@@ -7742,2 +7862,17 @@ set_window (struct fujitsu *s)
+@@ -7742,2 +7867,17 @@ set_window (struct fujitsu *s)
 -  /* common to all vuids */
 -  if(s->source == SOURCE_FLATBED){
 +  /* The SV600 Windows minidriver's SendSWDData() emits a Comet-specific
@@ -251,7 +256,7 @@ index 64eb90f..b5c01c1 100644
 +
 +  /* common to all other vuids */
 +  else if(s->source == SOURCE_FLATBED){
-@@ -7948,0 +8084,120 @@ object_position (struct fujitsu *s, int action)
+@@ -7948,0 +8089,120 @@ object_position (struct fujitsu *s, int action)
 +static SANE_Status
 +sv600_send_diagnostic (struct fujitsu *s, const char *name,
 +                       const unsigned char *payload, size_t payload_len)
@@ -372,7 +377,7 @@ index 64eb90f..b5c01c1 100644
 +  return SANE_STATUS_GOOD;
 +}
 +
-@@ -10273,0 +10529,751 @@ buffer_crop(struct fujitsu *s, int side)
+@@ -10273,0 +10534,794 @@ buffer_crop(struct fujitsu *s, int side)
 +struct sv600_point {
 +  double x;
 +  double y;
@@ -762,7 +767,8 @@ index 64eb90f..b5c01c1 100644
 + * document after acquisition and applies a perspective transform.  Reproduce
 + * the useful flat-document part here without adding an OpenCV dependency. */
 +static SANE_Status
-+buffer_sv600_perspective(struct fujitsu *s, int side)
++buffer_sv600_perspective(struct fujitsu *s, int side,
++                         int requested_portrait)
 +{
 +  SANE_Parameters *params = &s->s_params;
 +  unsigned long histogram[256];
@@ -784,6 +790,7 @@ index 64eb90f..b5c01c1 100644
 +  int output_width;
 +  int output_height;
 +  int output_portrait;
++  int rotation = 0;
 +  int crop_left;
 +  int crop_top;
 +  int crop_right;
@@ -1097,7 +1104,48 @@ index 64eb90f..b5c01c1 100644
 +                             coefficients,
 +                             crop_left, crop_top, crop_right, crop_bottom);
 +
-+  memcpy(s->buffers[side], corrected, output_bytes);
++  /* The user-facing scan window carries the orientation selected in the
++   * application.  A sideways A4 is acquired in its natural landscape shape
++   * for maximum SV600 quality, then rotated by moving whole RGB pixels.  This
++   * adds no resampling pass and therefore cannot soften text.  With the usual
++   * placement (the top of the page at the camera's right), portrait output is
++   * a counter-clockwise rotation. */
++  if (requested_portrait != output_portrait) {
++    int original_width = output_width;
++    int original_height = output_height;
++    int y;
++
++    if (requested_portrait) {
++      for (y = 0; y < original_height; y++) {
++        int x;
++        for (x = 0; x < original_width; x++) {
++          const unsigned char *source = corrected
++            + ((size_t)y * original_width + x) * 3;
++          unsigned char *destination = s->buffers[side]
++            + ((size_t)(original_width - 1 - x) * original_height + y) * 3;
++          memcpy(destination, source, 3);
++        }
++      }
++      rotation = 270;
++    }
++    else {
++      for (y = 0; y < original_height; y++) {
++        int x;
++        for (x = 0; x < original_width; x++) {
++          const unsigned char *source = corrected
++            + ((size_t)y * original_width + x) * 3;
++          unsigned char *destination = s->buffers[side]
++            + ((size_t)x * original_height + original_height - 1 - y) * 3;
++          memcpy(destination, source, 3);
++        }
++      }
++      rotation = 90;
++    }
++    output_width = original_height;
++    output_height = original_width;
++  }
++  else
++    memcpy(s->buffers[side], corrected, output_bytes);
 +  params->pixels_per_line = output_width;
 +  params->bytes_per_line = output_width * 3;
 +  params->lines = output_height;
@@ -1107,14 +1155,14 @@ index 64eb90f..b5c01c1 100644
 +
 +  DBG (15, "buffer_sv600_perspective: threshold=%d corners="
 +       "%.0f:%.0f,%.0f:%.0f,%.0f:%.0f,%.0f:%.0f output=%dx%d "
-+       "crop=%d:%d:%d:%d\n",
++       "crop=%d:%d:%d:%d rotation=%d\n",
 +       threshold,
 +       corners[0].x, corners[0].y,
 +       corners[1].x, corners[1].y,
 +       corners[2].x, corners[2].y,
 +       corners[3].x, corners[3].y,
 +       output_width, output_height,
-+       crop_left, crop_top, crop_right, crop_bottom);
++       crop_left, crop_top, crop_right, crop_bottom, rotation);
 +
 +cleanup:
 +  free(corrected);
@@ -1125,11 +1173,12 @@ index 64eb90f..b5c01c1 100644
 +}
 +
 diff --git a/backend/fujitsu.h b/backend/fujitsu.h
-index 6c42ff8..7278fed 100644
+index 6c42ff8..1dab97a 100644
 --- a/backend/fujitsu.h
 +++ b/backend/fujitsu.h
 @@ -812,0 +813,2 @@ static SANE_Status mode_select_auto (struct fujitsu *s);
 +static SANE_Status sv600_prepare_scan (struct fujitsu *s);
 +
-@@ -852,0 +855 @@ static SANE_Status buffer_crop(struct fujitsu *s, int side);
-+static SANE_Status buffer_sv600_perspective(struct fujitsu *s, int side);
+@@ -852,0 +855,2 @@ static SANE_Status buffer_crop(struct fujitsu *s, int side);
++static SANE_Status buffer_sv600_perspective(struct fujitsu *s, int side,
++  int requested_portrait);
