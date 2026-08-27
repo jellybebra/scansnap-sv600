@@ -1,5 +1,5 @@
 diff --git a/backend/fujitsu.c b/backend/fujitsu.c
-index 64eb90f..7ddee57 100644
+index 64eb90f..b5c01c1 100644
 --- a/backend/fujitsu.c
 +++ b/backend/fujitsu.c
 @@ -741,0 +742 @@
@@ -372,7 +372,7 @@ index 64eb90f..7ddee57 100644
 +  return SANE_STATUS_GOOD;
 +}
 +
-@@ -10273,0 +10529,616 @@ buffer_crop(struct fujitsu *s, int side)
+@@ -10273,0 +10529,751 @@ buffer_crop(struct fujitsu *s, int side)
 +struct sv600_point {
 +  double x;
 +  double y;
@@ -473,7 +473,7 @@ index 64eb90f..7ddee57 100644
 + * resolution-independent and suitable for the geometrically similar A3 page.
 + */
 +static double
-+sv600_flat_dewarp_y(int x, double y, int width, int height)
++sv600_flat_dewarp_y(double x, double y, int width, int height)
 +{
 +  static const double coefficients[3][2] = {
 +    {-5.25319, 17.87414},
@@ -562,6 +562,202 @@ index 64eb90f..7ddee57 100644
 +  return y + displacement * scale;
 +}
 +
++/* Render directly from the scanner buffer.  Crop coordinates are expressed
++ * in the first rectified image, but are folded into this source mapping so the
++ * final page still receives only one interpolation pass. */
++static void
++sv600_render_perspective(struct fujitsu *s, int side,
++                         unsigned char *corrected,
++                         int source_width, int source_height,
++                         int output_width, int output_height,
++                         int output_portrait, const double coefficients[8],
++                         int crop_left, int crop_top,
++                         int crop_right, int crop_bottom)
++{
++  SANE_Parameters *params = &s->s_params;
++  double horizontal_span = output_width - 1 - crop_left - crop_right;
++  double vertical_span = output_height - 1 - crop_top - crop_bottom;
++  int y;
++
++  for (y = 0; y < output_height; y++) {
++    double target_y = crop_top + y * vertical_span
++      / max(1, output_height - 1);
++    int x;
++    for (x = 0; x < output_width; x++) {
++      double target_x = crop_left + x * horizontal_span
++        / max(1, output_width - 1);
++      double rectified_x = target_x;
++      double rectified_y = target_y;
++      double source_x[3];
++      double source_y[3];
++      unsigned char *output = corrected
++        + ((size_t)y * output_width + x) * 3;
++      int valid = 1;
++      int channel;
++
++      if (!output_portrait)
++        sv600_landscape_dewarp(target_x, target_y,
++                               output_width, output_height,
++                               &rectified_x, &rectified_y);
++
++      for (channel = 0; channel < 3; channel++) {
++        double channel_y = sv600_channel_registration_y(channel,
++                                                         rectified_y,
++                                                         output_height);
++        if (output_portrait)
++          channel_y = sv600_flat_dewarp_y(target_x, channel_y,
++                                          output_width, output_height);
++        {
++          double denominator = coefficients[6] * rectified_x
++            + coefficients[7] * channel_y + 1;
++          source_x[channel] = (coefficients[0] * rectified_x
++                               + coefficients[1] * channel_y
++                               + coefficients[2]) / denominator;
++          source_y[channel] = (coefficients[3] * rectified_x
++                               + coefficients[4] * channel_y
++                               + coefficients[5]) / denominator;
++        }
++        if (source_x[channel] < 0 || source_y[channel] < 0
++            || source_x[channel] > source_width - 1
++            || source_y[channel] > source_height - 1)
++          valid = 0;
++      }
++
++      if (!valid) {
++        output[0] = output[1] = output[2] = 255;
++      }
++      else {
++        for (channel = 0; channel < 3; channel++) {
++          int x0 = (int)source_x[channel];
++          int y0 = (int)source_y[channel];
++          int x1 = min(x0 + 1, source_width - 1);
++          int y1 = min(y0 + 1, source_height - 1);
++          double dx = source_x[channel] - x0;
++          double dy = source_y[channel] - y0;
++          const unsigned char *top_left = s->buffers[side]
++            + (size_t)y0 * params->bytes_per_line + x0 * 3;
++          const unsigned char *top_right = s->buffers[side]
++            + (size_t)y0 * params->bytes_per_line + x1 * 3;
++          const unsigned char *bottom_left = s->buffers[side]
++            + (size_t)y1 * params->bytes_per_line + x0 * 3;
++          const unsigned char *bottom_right = s->buffers[side]
++            + (size_t)y1 * params->bytes_per_line + x1 * 3;
++          double top = top_left[channel] * (1 - dx)
++            + top_right[channel] * dx;
++          double bottom = bottom_left[channel] * (1 - dx)
++            + bottom_right[channel] * dx;
++          output[channel] = (unsigned char)(top * (1 - dy)
++                                             + bottom * dy + 0.5);
++        }
++      }
++    }
++  }
++}
++
++static int
++sv600_line_luminance_percentile(const unsigned char *image,
++                                int width, int height,
++                                int horizontal, int coordinate,
++                                int start, int end, int percentile)
++{
++  unsigned long histogram[256];
++  unsigned long count = 0;
++  unsigned long target;
++  unsigned long cumulative = 0;
++  int position;
++
++  memset(histogram, 0, sizeof(histogram));
++  for (position = start; position < end; position++) {
++    int x = horizontal ? position : coordinate;
++    int y = horizontal ? coordinate : position;
++    const unsigned char *pixel;
++
++    if (x < 0 || x >= width || y < 0 || y >= height)
++      continue;
++    pixel = image + ((size_t)y * width + x) * 3;
++    histogram[sv600_luminance(pixel)]++;
++    count++;
++  }
++  if (!count)
++    return 255;
++
++  target = (count * percentile + 99) / 100;
++  for (position = 0; position < 256; position++) {
++    cumulative += histogram[position];
++    if (cumulative >= target)
++      return position;
++  }
++  return 255;
++}
++
++/* Measure each edge against nearby clean paper rather than reserving a fixed
++ * white frame.  The twentieth percentile notices a broad table/shadow strip
++ * but ignores ordinary sparse text.  Only the contaminated amount is removed.
++ */
++static void
++sv600_detect_clean_crop(const unsigned char *image, int width, int height,
++                        int *crop_left, int *crop_top,
++                        int *crop_right, int *crop_bottom)
++{
++  int maximum_crop = max(2, min(width, height) / 25);
++  int horizontal_start = width / 20;
++  int horizontal_end = width - horizontal_start;
++  int vertical_start = height / 20;
++  int vertical_end = height - vertical_start;
++  int *crops[4] = {crop_top, crop_bottom, crop_left, crop_right};
++  int side;
++
++  *crop_left = *crop_top = *crop_right = *crop_bottom = 0;
++  for (side = 0; side < 4; side++) {
++    int reference = 0;
++    int threshold;
++    int distance;
++
++    for (distance = maximum_crop * 3 / 4;
++         distance <= maximum_crop; distance++) {
++      int horizontal = side < 2;
++      int coordinate;
++      int brightness;
++
++      if (side == 0)
++        coordinate = distance;
++      else if (side == 1)
++        coordinate = height - 1 - distance;
++      else if (side == 2)
++        coordinate = distance;
++      else
++        coordinate = width - 1 - distance;
++      brightness = sv600_line_luminance_percentile(
++        image, width, height, horizontal, coordinate,
++        horizontal ? horizontal_start : vertical_start,
++        horizontal ? horizontal_end : vertical_end, 20);
++      reference = max(reference, brightness);
++    }
++
++    threshold = max(0, reference - 12);
++    for (distance = 0; distance <= maximum_crop; distance++) {
++      int horizontal = side < 2;
++      int coordinate;
++      int brightness;
++
++      if (side == 0)
++        coordinate = distance;
++      else if (side == 1)
++        coordinate = height - 1 - distance;
++      else if (side == 2)
++        coordinate = distance;
++      else
++        coordinate = width - 1 - distance;
++      brightness = sv600_line_luminance_percentile(
++        image, width, height, horizontal, coordinate,
++        horizontal ? horizontal_start : vertical_start,
++        horizontal ? horizontal_end : vertical_end, 20);
++      if (brightness < threshold)
++        *crops[side] = min(maximum_crop, distance + 2);
++    }
++  }
++}
++
 +/* The SV600 scans a projected view of the mat.  ScanSnap Home identifies the
 + * document after acquisition and applies a perspective transform.  Reproduce
 + * the useful flat-document part here without adding an OpenCV dependency. */
@@ -588,7 +784,10 @@ index 64eb90f..7ddee57 100644
 +  int output_width;
 +  int output_height;
 +  int output_portrait;
-+  int print_border;
++  int crop_left;
++  int crop_top;
++  int crop_right;
++  int crop_bottom;
 +  size_t output_bytes;
 +  int index;
 +  SANE_Status ret = SANE_STATUS_GOOD;
@@ -868,11 +1067,6 @@ index 64eb90f..7ddee57 100644
 +    }
 +  }
 +
-+  /* The nonlinear correction can expose a narrow strip of the dark mat just
-+   * outside the detected paper edge.  ScanSnap Home removes that strip for a
-+   * print-ready page.  Reserve a five-millimetre white safety border at 300 dpi
-+   * so graphical applications never print the scanner table around the page. */
-+  print_border = max(2, min(output_width, output_height) / 40);
 +  output_bytes = (size_t)output_width * output_height * 3;
 +  if (output_bytes > (size_t)s->buff_tot[side]) {
 +    DBG (5, "buffer_sv600_perspective: corrected image exceeds buffer\n");
@@ -890,79 +1084,18 @@ index 64eb90f..7ddee57 100644
 +    goto cleanup;
 +  }
 +
-+  {
-+    int y;
-+    for (y = 0; y < output_height; y++) {
-+      int x;
-+      for (x = 0; x < output_width; x++) {
-+        double rectified_x = x;
-+        double rectified_y = y;
-+        double source_x[3];
-+        double source_y[3];
-+        unsigned char *output = corrected
-+          + ((size_t)y * output_width + x) * 3;
-+        int valid = 1;
-+        int channel;
-+
-+        if (!output_portrait)
-+          sv600_landscape_dewarp(x, y, output_width, output_height,
-+                                 &rectified_x, &rectified_y);
-+
-+        for (channel = 0; channel < 3; channel++) {
-+          double channel_y = sv600_channel_registration_y(channel,
-+                                                           rectified_y,
-+                                                           output_height);
-+          if (output_portrait)
-+            channel_y = sv600_flat_dewarp_y(x, channel_y,
-+                                            output_width,
-+                                            output_height);
-+          {
-+            double denominator = coefficients[6] * rectified_x
-+              + coefficients[7] * channel_y + 1;
-+            source_x[channel] = (coefficients[0] * rectified_x
-+                               + coefficients[1] * channel_y
-+                               + coefficients[2]) / denominator;
-+            source_y[channel] = (coefficients[3] * rectified_x
-+                               + coefficients[4] * channel_y
-+                               + coefficients[5]) / denominator;
-+          }
-+          if (source_x[channel] < 0 || source_y[channel] < 0
-+              || source_x[channel] > source_width - 1
-+              || source_y[channel] > source_height - 1)
-+            valid = 0;
-+        }
-+
-+        if (!valid) {
-+          output[0] = output[1] = output[2] = 255;
-+        }
-+        else {
-+          for (channel = 0; channel < 3; channel++) {
-+            int x0 = (int)source_x[channel];
-+            int y0 = (int)source_y[channel];
-+            int x1 = min(x0 + 1, source_width - 1);
-+            int y1 = min(y0 + 1, source_height - 1);
-+            double dx = source_x[channel] - x0;
-+            double dy = source_y[channel] - y0;
-+            const unsigned char *top_left = s->buffers[side]
-+              + (size_t)y0 * params->bytes_per_line + x0 * 3;
-+            const unsigned char *top_right = s->buffers[side]
-+              + (size_t)y0 * params->bytes_per_line + x1 * 3;
-+            const unsigned char *bottom_left = s->buffers[side]
-+              + (size_t)y1 * params->bytes_per_line + x0 * 3;
-+            const unsigned char *bottom_right = s->buffers[side]
-+              + (size_t)y1 * params->bytes_per_line + x1 * 3;
-+            double top = top_left[channel] * (1 - dx) + top_right[channel] * dx;
-+            double bottom = bottom_left[channel] * (1 - dx)
-+              + bottom_right[channel] * dx;
-+            output[channel] = (unsigned char)(top * (1 - dy) + bottom * dy + 0.5);
-+          }
-+        }
-+        if (x < print_border || x >= output_width - print_border
-+            || y < print_border || y >= output_height - print_border)
-+          output[0] = output[1] = output[2] = 255;
-+      }
-+    }
-+  }
++  sv600_render_perspective(s, side, corrected,
++                           source_width, source_height,
++                           output_width, output_height, output_portrait,
++                           coefficients, 0, 0, 0, 0);
++  sv600_detect_clean_crop(corrected, output_width, output_height,
++                          &crop_left, &crop_top, &crop_right, &crop_bottom);
++  if (crop_left || crop_top || crop_right || crop_bottom)
++    sv600_render_perspective(s, side, corrected,
++                             source_width, source_height,
++                             output_width, output_height, output_portrait,
++                             coefficients,
++                             crop_left, crop_top, crop_right, crop_bottom);
 +
 +  memcpy(s->buffers[side], corrected, output_bytes);
 +  params->pixels_per_line = output_width;
@@ -973,13 +1106,15 @@ index 64eb90f..7ddee57 100644
 +  s->buff_rx[side] = (int)output_bytes;
 +
 +  DBG (15, "buffer_sv600_perspective: threshold=%d corners="
-+       "%.0f:%.0f,%.0f:%.0f,%.0f:%.0f,%.0f:%.0f output=%dx%d\n",
++       "%.0f:%.0f,%.0f:%.0f,%.0f:%.0f,%.0f:%.0f output=%dx%d "
++       "crop=%d:%d:%d:%d\n",
 +       threshold,
 +       corners[0].x, corners[0].y,
 +       corners[1].x, corners[1].y,
 +       corners[2].x, corners[2].y,
 +       corners[3].x, corners[3].y,
-+       output_width, output_height);
++       output_width, output_height,
++       crop_left, crop_top, crop_right, crop_bottom);
 +
 +cleanup:
 +  free(corrected);
