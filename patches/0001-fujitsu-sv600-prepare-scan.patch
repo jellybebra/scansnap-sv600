@@ -1,5 +1,5 @@
 diff --git a/backend/fujitsu.c b/backend/fujitsu.c
-index 64eb90f..7dbc9a2 100644
+index 64eb90f..7ddee57 100644
 --- a/backend/fujitsu.c
 +++ b/backend/fujitsu.c
 @@ -741,0 +742 @@
@@ -870,9 +870,9 @@ index 64eb90f..7dbc9a2 100644
 +
 +  /* The nonlinear correction can expose a narrow strip of the dark mat just
 +   * outside the detected paper edge.  ScanSnap Home removes that strip for a
-+   * print-ready page.  Reserve a two-millimetre white safety border at 300 dpi
++   * print-ready page.  Reserve a five-millimetre white safety border at 300 dpi
 +   * so graphical applications never print the scanner table around the page. */
-+  print_border = max(2, min(output_width, output_height) / 100);
++  print_border = max(2, min(output_width, output_height) / 40);
 +  output_bytes = (size_t)output_width * output_height * 3;
 +  if (output_bytes > (size_t)s->buff_tot[side]) {
 +    DBG (5, "buffer_sv600_perspective: corrected image exceeds buffer\n");
