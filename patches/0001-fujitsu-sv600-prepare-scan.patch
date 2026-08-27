@@ -1,5 +1,5 @@
 diff --git a/backend/fujitsu.c b/backend/fujitsu.c
-index 64eb90f..70b02fd 100644
+index 64eb90f..2b0c830 100644
 --- a/backend/fujitsu.c
 +++ b/backend/fujitsu.c
 @@ -741,0 +742 @@
@@ -48,9 +48,31 @@ index 64eb90f..70b02fd 100644
 +    set_MSEL_overscan(page, MSEL_ON);
 +  else
 +    set_MSEL_overscan(page, s->overscan);
-@@ -6952,0 +6990 @@ sane_start (SANE_Handle handle)
+@@ -6952,0 +6990,6 @@ sane_start (SANE_Handle handle)
 +  int is_sv600 = strstr(s->model_name, "SV600") != NULL;
-@@ -7019,0 +7058,10 @@ sane_start (SANE_Handle handle)
++  int sv600_full_frame = 0;
++  int saved_tl_x = 0;
++  int saved_tl_y = 0;
++  int saved_br_x = 0;
++  int saved_br_y = 0;
+@@ -6987,0 +7031,16 @@ sane_start (SANE_Handle handle)
++      /* Frontends such as Simple Scan express A4 as a portrait scan window.
++       * That window clips a physically landscape page before software can
++       * discover its orientation.  Acquire the whole SV600 mat internally;
++       * the perspective pass below returns only the detected document. */
++      if (is_sv600 && s->swdeskew && s->swcrop) {
++        saved_tl_x = s->tl_x;
++        saved_tl_y = s->tl_y;
++        saved_br_x = s->br_x;
++        saved_br_y = s->br_y;
++        s->tl_x = 0;
++        s->tl_y = 0;
++        s->br_x = s->max_x;
++        s->br_y = s->max_y;
++        sv600_full_frame = 1;
++      }
++
+@@ -7019,0 +7079,10 @@ sane_start (SANE_Handle handle)
 +      /* The SV600 performs this preparation before MODE SELECT, SET WINDOW,
 +       * and SCAN in the original driver. */
 +      if (is_sv600) {
@@ -61,7 +83,7 @@ index 64eb90f..70b02fd 100644
 +        }
 +      }
 +
-@@ -7025,4 +7073,14 @@ sane_start (SANE_Handle handle)
+@@ -7025,4 +7094,14 @@ sane_start (SANE_Handle handle)
 -      /* enable double feed detection */
 -      ret = mode_select_df(s);
 -      if (ret != SANE_STATUS_GOOD)
@@ -80,7 +102,7 @@ index 64eb90f..70b02fd 100644
 +        ret = mode_select_df(s);
 +        if (ret != SANE_STATUS_GOOD)
 +          DBG (5, "sane_start: WARNING: cannot mode_select_df %d\n", ret);
-@@ -7030,4 +7088,4 @@ sane_start (SANE_Handle handle)
+@@ -7030,4 +7109,4 @@ sane_start (SANE_Handle handle)
 -      /* enable background color setting */
 -      ret = mode_select_bg(s);
 -      if (ret != SANE_STATUS_GOOD)
@@ -89,7 +111,7 @@ index 64eb90f..70b02fd 100644
 +        ret = mode_select_bg(s);
 +        if (ret != SANE_STATUS_GOOD)
 +          DBG (5, "sane_start: WARNING: cannot mode_select_bg %d\n", ret);
-@@ -7035,4 +7093,4 @@ sane_start (SANE_Handle handle)
+@@ -7035,4 +7114,4 @@ sane_start (SANE_Handle handle)
 -      /* enable dropout color setting */
 -      ret = mode_select_dropout(s);
 -      if (ret != SANE_STATUS_GOOD)
@@ -98,7 +120,7 @@ index 64eb90f..70b02fd 100644
 +        ret = mode_select_dropout(s);
 +        if (ret != SANE_STATUS_GOOD)
 +          DBG (5, "sane_start: WARNING: cannot mode_select_dropout %d\n", ret);
-@@ -7040,4 +7098,4 @@ sane_start (SANE_Handle handle)
+@@ -7040,4 +7119,4 @@ sane_start (SANE_Handle handle)
 -      /* enable buffering setting */
 -      ret = mode_select_buff(s);
 -      if (ret != SANE_STATUS_GOOD)
@@ -107,7 +129,7 @@ index 64eb90f..70b02fd 100644
 +        ret = mode_select_buff(s);
 +        if (ret != SANE_STATUS_GOOD)
 +          DBG (5, "sane_start: WARNING: cannot mode_select_buff %d\n", ret);
-@@ -7045,4 +7103,4 @@ sane_start (SANE_Handle handle)
+@@ -7045,4 +7124,4 @@ sane_start (SANE_Handle handle)
 -      /* enable prepick setting */
 -      ret = mode_select_prepick(s);
 -      if (ret != SANE_STATUS_GOOD)
@@ -116,7 +138,7 @@ index 64eb90f..70b02fd 100644
 +        ret = mode_select_prepick(s);
 +        if (ret != SANE_STATUS_GOOD)
 +          DBG (5, "sane_start: WARNING: cannot mode_select_prepick %d\n", ret);
-@@ -7050,4 +7108,5 @@ sane_start (SANE_Handle handle)
+@@ -7050,4 +7129,5 @@ sane_start (SANE_Handle handle)
 -      /* send endorser config */
 -      ret = send_endorser(s);
 -      if (ret != SANE_STATUS_GOOD)
@@ -126,13 +148,13 @@ index 64eb90f..70b02fd 100644
 +        if (ret != SANE_STATUS_GOOD)
 +          DBG (5, "sane_start: WARNING: cannot send_endorser %d\n", ret);
 +      }
-@@ -7063 +7122 @@ sane_start (SANE_Handle handle)
+@@ -7063 +7143 @@ sane_start (SANE_Handle handle)
 -      if ( s->window_gamma ){
 +      if (s->window_gamma && !is_sv600){
-@@ -7070 +7129 @@ sane_start (SANE_Handle handle)
+@@ -7070 +7150 @@ sane_start (SANE_Handle handle)
 -      if (s->need_q_table){
 +      if (s->need_q_table && !is_sv600){
-@@ -7077,4 +7136,6 @@ sane_start (SANE_Handle handle)
+@@ -7077,4 +7157,6 @@ sane_start (SANE_Handle handle)
 -      ret = endorser(s);
 -      if (ret != SANE_STATUS_GOOD) {
 -        DBG (5, "sane_start: ERROR: cannot start/stop endorser\n");
@@ -143,7 +165,7 @@ index 64eb90f..70b02fd 100644
 +          DBG (5, "sane_start: ERROR: cannot start/stop endorser\n");
 +          goto errors;
 +        }
-@@ -7084,3 +7145,5 @@ sane_start (SANE_Handle handle)
+@@ -7084,3 +7166,5 @@ sane_start (SANE_Handle handle)
 -      ret = scanner_control(s, SC_function_lamp_on);
 -      if (ret != SANE_STATUS_GOOD) {
 -        DBG (5, "sane_start: WARNING: cannot start lamp, ignoring\n");
@@ -152,26 +174,64 @@ index 64eb90f..70b02fd 100644
 +        if (ret != SANE_STATUS_GOOD) {
 +          DBG (5, "sane_start: WARNING: cannot start lamp, ignoring\n");
 +        }
-@@ -7143,0 +7207,6 @@ sane_start (SANE_Handle handle)
+@@ -7143,0 +7228,6 @@ sane_start (SANE_Handle handle)
 +      /* The Windows driver enforces a model-specific class-1 settling time
 +       * after SET WINDOW and before SCAN.  A conservative half-second delay
 +       * avoids racing the SV600 illumination mechanics. */
 +      if (is_sv600)
 +        usleep(500000);
 +
-@@ -7251,0 +7321,3 @@ sane_start (SANE_Handle handle)
+@@ -7245,3 +7335,5 @@ sane_start (SANE_Handle handle)
+-    /* finished buffering, adjust image as required */
+-    if(s->swdeskew && (!s->hwdeskewcrop || s->req_driv_crop)){
+-      buffer_deskew(s,s->side);
++    /* The generic SANE deskew rotates a landscape SV600 projection before
++     * the document corners are known and can clip it against the frame.
++     * Detect and rectify SV600 pages directly from the untouched full image. */
 +    if(is_sv600 && s->swdeskew && s->swcrop){
 +      buffer_sv600_perspective(s,s->side);
+@@ -7249,2 +7341,7 @@ sane_start (SANE_Handle handle)
+-    if(s->swcrop && (!s->hwdeskewcrop || s->req_driv_crop)){
+-      buffer_crop(s,s->side);
++    else {
++      if(s->swdeskew && (!s->hwdeskewcrop || s->req_driv_crop)){
++        buffer_deskew(s,s->side);
++      }
++      if(s->swcrop && (!s->hwdeskewcrop || s->req_driv_crop)){
++        buffer_crop(s,s->side);
++      }
+@@ -7262,0 +7360,6 @@ sane_start (SANE_Handle handle)
++        if (sv600_full_frame) {
++          s->tl_x = saved_tl_x;
++          s->tl_y = saved_tl_y;
++          s->br_x = saved_br_x;
++          s->br_y = saved_br_y;
++        }
+@@ -7268,0 +7372,7 @@ sane_start (SANE_Handle handle)
++  if (sv600_full_frame) {
++    s->tl_x = saved_tl_x;
++    s->tl_y = saved_tl_y;
++    s->br_x = saved_br_x;
++    s->br_y = saved_br_y;
++  }
++
+@@ -7280,0 +7391,7 @@ sane_start (SANE_Handle handle)
++    if (sv600_full_frame) {
++      s->tl_x = saved_tl_x;
++      s->tl_y = saved_tl_y;
++      s->br_x = saved_br_x;
++      s->br_y = saved_br_y;
 +    }
-@@ -7522,0 +7595 @@ set_window (struct fujitsu *s)
++
+@@ -7522,0 +7640 @@ set_window (struct fujitsu *s)
 +  int is_sv600 = strstr(s->model_name, "SV600") != NULL;
-@@ -7539,0 +7613 @@ set_window (struct fujitsu *s)
+@@ -7539,0 +7658 @@ set_window (struct fujitsu *s)
 +  int width = 0;
-@@ -7569 +7643,2 @@ set_window (struct fujitsu *s)
+@@ -7569 +7688,2 @@ set_window (struct fujitsu *s)
 -  set_WD_width (desc1, s->s_params.pixels_per_line * 1200/s->resolution_x);
 +  width = s->s_params.pixels_per_line * 1200/s->resolution_x;
 +  set_WD_width (desc1, width);
-@@ -7742,2 +7817,17 @@ set_window (struct fujitsu *s)
+@@ -7742,2 +7862,17 @@ set_window (struct fujitsu *s)
 -  /* common to all vuids */
 -  if(s->source == SOURCE_FLATBED){
 +  /* The SV600 Windows minidriver's SendSWDData() emits a Comet-specific
@@ -191,7 +251,7 @@ index 64eb90f..70b02fd 100644
 +
 +  /* common to all other vuids */
 +  else if(s->source == SOURCE_FLATBED){
-@@ -7948,0 +8039,120 @@ object_position (struct fujitsu *s, int action)
+@@ -7948,0 +8084,120 @@ object_position (struct fujitsu *s, int action)
 +static SANE_Status
 +sv600_send_diagnostic (struct fujitsu *s, const char *name,
 +                       const unsigned char *payload, size_t payload_len)
@@ -312,7 +372,7 @@ index 64eb90f..70b02fd 100644
 +  return SANE_STATUS_GOOD;
 +}
 +
-@@ -10273,0 +10484,482 @@ buffer_crop(struct fujitsu *s, int side)
+@@ -10273,0 +10529,607 @@ buffer_crop(struct fujitsu *s, int side)
 +struct sv600_point {
 +  double x;
 +  double y;
@@ -435,6 +495,51 @@ index 64eb90f..70b02fd 100644
 +  return y + displacement * height / 877.0;
 +}
 +
++/* A landscape A4 calibration target exposes an additional two-dimensional
++ * sweep distortion: projective correction alone leaves vertical and
++ * horizontal document rules curved.  These coefficients were fitted to both
++ * line families after the perspective transform.  Apply the inverse mapping
++ * while sampling the source so the correction does not add a resampling pass.
++ */
++static void
++sv600_landscape_dewarp(double x, double y, int width, int height,
++                       double *corrected_x, double *corrected_y)
++{
++  static const double x_coefficients[6] = {
++    -4.285807075542492, -9.041814251914387,
++     2.070569259845292, -38.920656894451700,
++     2.621513440279683,  2.561324063071990
++  };
++  static const double y_coefficients[6] = {
++     4.118655922157716, -3.273545554632843,
++    -4.678789683801378,  3.609346853079987,
++     0.975310346498069, -0.122632348767225
++  };
++  double normalized_x = 2.0 * x / max(1, width - 1) - 1.0;
++  double normalized_y = 2.0 * y / max(1, height - 1) - 1.0;
++  double normalized_x2 = normalized_x * normalized_x;
++  double normalized_y2 = normalized_y * normalized_y;
++  double normalized_x3 = normalized_x2 * normalized_x;
++  double normalized_y3 = normalized_y2 * normalized_y;
++  double displacement_x =
++      x_coefficients[0] * normalized_y
++    + x_coefficients[1] * normalized_x * normalized_y
++    + x_coefficients[2] * normalized_y2
++    + x_coefficients[3] * normalized_x * normalized_y2
++    + x_coefficients[4] * normalized_y3
++    + x_coefficients[5] * normalized_x * normalized_y3;
++  double displacement_y =
++      y_coefficients[0] * normalized_x
++    + y_coefficients[1] * normalized_x * normalized_y
++    + y_coefficients[2] * normalized_x2
++    + y_coefficients[3] * normalized_x2 * normalized_y
++    + y_coefficients[4] * normalized_x3
++    + y_coefficients[5] * normalized_x3 * normalized_y;
++
++  *corrected_x = x + displacement_x * width / 3508.0;
++  *corrected_y = y + displacement_y * height / 2480.0;
++}
++
 +/* The red and blue SV600 images have opposite vertical scale errors relative
 + * to green.  They are nearly independent of x, but grow quadratically down
 + * the scan: about one pixel near the top and fourteen pixels at the bottom of
@@ -482,6 +587,7 @@ index 64eb90f..70b02fd 100644
 +  int best_y[4] = {0, 0, 0, 0};
 +  int output_width;
 +  int output_height;
++  int output_portrait;
 +  size_t output_bytes;
 +  int index;
 +  SANE_Status ret = SANE_STATUS_GOOD;
@@ -495,7 +601,10 @@ index 64eb90f..70b02fd 100644
 +    goto cleanup;
 +  }
 +
-+  step = max(source_width, source_height) / 640;
++  /* Corner errors are amplified across a perspective-corrected page.  Keep
++   * the detection grid fine enough for A4 rules to remain square while still
++   * avoiding a full-resolution flood-fill allocation. */
++  step = max(source_width, source_height) / 1280;
 +  if (step < 1)
 +    step = 1;
 +  grid_width = (source_width + step - 1) / step;
@@ -646,8 +755,51 @@ index 64eb90f..70b02fd 100644
 +  }
 +
 +  for (index = 0; index < 4; index++) {
-+    corners[index].x = min(best_x[index] * step, source_width - 1);
-+    corners[index].y = min(best_y[index] * step, source_height - 1);
++    int coarse_x = min(best_x[index] * step, source_width - 1);
++    int coarse_y = min(best_y[index] * step, source_height - 1);
++    int radius = step * 8;
++    int x_direction = (index == 0 || index == 3) ? 1 : -1;
++    int y_direction = (index == 0 || index == 1) ? 1 : -1;
++    int best_score = (index == 0 || index == 3)
++      ? source_width + source_height + 1
++      : -source_width - source_height - 1;
++    int search_y;
++
++    corners[index].x = coarse_x;
++    corners[index].y = coarse_y;
++    for (search_y = max(1, coarse_y - radius);
++         search_y <= min(source_height - 2, coarse_y + radius);
++         search_y++) {
++      int search_x;
++      for (search_x = max(1, coarse_x - radius);
++           search_x <= min(source_width - 2, coarse_x + radius);
++           search_x++) {
++        const unsigned char *pixel = s->buffers[side]
++          + (size_t)search_y * params->bytes_per_line + search_x * 3;
++        const unsigned char *inside_x = s->buffers[side]
++          + (size_t)search_y * params->bytes_per_line
++          + (search_x + x_direction) * 3;
++        const unsigned char *inside_y = s->buffers[side]
++          + (size_t)(search_y + y_direction) * params->bytes_per_line
++          + search_x * 3;
++        int score;
++
++        /* Require two inward neighbours so isolated highlights on the dark
++         * mat cannot be mistaken for a page corner. */
++        if (sv600_luminance(pixel) <= threshold
++            || sv600_luminance(inside_x) <= threshold
++            || sv600_luminance(inside_y) <= threshold)
++          continue;
++        score = (index == 0 || index == 2)
++          ? search_x + search_y : search_x - search_y;
++        if (((index == 0 || index == 3) && score < best_score)
++            || ((index == 1 || index == 2) && score > best_score)) {
++          best_score = score;
++          corners[index].x = search_x;
++          corners[index].y = search_y;
++        }
++      }
++    }
 +  }
 +
 +  {
@@ -667,28 +819,51 @@ index 64eb90f..70b02fd 100644
 +
 +  output_width = source_width;
 +  output_height = source_height;
++  output_portrait = source_height >= source_width;
 +  {
-+    int portrait = source_height >= source_width;
-+    double long_mm = max(source_width, source_height) * 25.4
-+      / max(s->resolution_x, s->resolution_y);
-+    double short_mm = min(source_width, source_height) * 25.4
-+      / max(s->resolution_x, s->resolution_y);
++    int min_x = corners[0].x;
++    int max_x = corners[0].x;
++    int min_y = corners[0].y;
++    int max_y = corners[0].y;
++    int corner;
++    int detected_width;
++    int detected_height;
++    double long_mm;
++    double short_mm;
 +    int short_pixels;
 +    int long_pixels;
 +
++    for (corner = 1; corner < 4; corner++) {
++      min_x = min(min_x, corners[corner].x);
++      max_x = max(max_x, corners[corner].x);
++      min_y = min(min_y, corners[corner].y);
++      max_y = max(max_y, corners[corner].y);
++    }
++    detected_width = max_x - min_x + 1;
++    detected_height = max_y - min_y + 1;
++    output_portrait = detected_height >= detected_width;
++    long_mm = max(detected_width, detected_height) * 25.4
++      / max(s->resolution_x, s->resolution_y);
++    short_mm = min(detected_width, detected_height) * 25.4
++      / max(s->resolution_x, s->resolution_y);
++
++    /* A landscape A4 placed near the camera has a much deeper projected
++     * bounding box than its physical 210 mm side (about 244 mm in practice).
++     * Keep enough tolerance to recognize that trapezoid as A4 before the
++     * homography restores the exact 297:210 aspect ratio. */
 +    if (long_mm >= 270 && long_mm <= 320
-+        && short_mm >= 180 && short_mm <= 235) {
++        && short_mm >= 180 && short_mm <= 260) {
 +      short_pixels = (int)(210.0 * s->resolution_x / 25.4 + 0.5);
 +      long_pixels = (int)(297.0 * s->resolution_y / 25.4 + 0.5);
-+      output_width = portrait ? short_pixels : long_pixels;
-+      output_height = portrait ? long_pixels : short_pixels;
++      output_width = output_portrait ? short_pixels : long_pixels;
++      output_height = output_portrait ? long_pixels : short_pixels;
 +    }
 +    else if (long_mm >= 390 && long_mm <= 440
 +             && short_mm >= 270 && short_mm <= 320) {
 +      short_pixels = (int)(297.0 * s->resolution_x / 25.4 + 0.5);
 +      long_pixels = (int)(420.0 * s->resolution_y / 25.4 + 0.5);
-+      output_width = portrait ? short_pixels : long_pixels;
-+      output_height = portrait ? long_pixels : short_pixels;
++      output_width = output_portrait ? short_pixels : long_pixels;
++      output_height = output_portrait ? long_pixels : short_pixels;
 +    }
 +  }
 +
@@ -714,6 +889,8 @@ index 64eb90f..70b02fd 100644
 +    for (y = 0; y < output_height; y++) {
 +      int x;
 +      for (x = 0; x < output_width; x++) {
++        double rectified_x = x;
++        double rectified_y = y;
 +        double source_x[3];
 +        double source_y[3];
 +        unsigned char *output = corrected
@@ -721,20 +898,28 @@ index 64eb90f..70b02fd 100644
 +        int valid = 1;
 +        int channel;
 +
++        if (!output_portrait)
++          sv600_landscape_dewarp(x, y, output_width, output_height,
++                                 &rectified_x, &rectified_y);
++
 +        for (channel = 0; channel < 3; channel++) {
-+          double channel_y = sv600_channel_registration_y(channel, y,
++          double channel_y = sv600_channel_registration_y(channel,
++                                                           rectified_y,
 +                                                           output_height);
-+          double rectified_y = sv600_flat_dewarp_y(x, channel_y,
-+                                                   output_width,
-+                                                   output_height);
-+          double denominator = coefficients[6] * x
-+            + coefficients[7] * rectified_y + 1;
-+          source_x[channel] = (coefficients[0] * x
-+                               + coefficients[1] * rectified_y
++          if (output_portrait)
++            channel_y = sv600_flat_dewarp_y(x, channel_y,
++                                            output_width,
++                                            output_height);
++          {
++            double denominator = coefficients[6] * rectified_x
++              + coefficients[7] * channel_y + 1;
++            source_x[channel] = (coefficients[0] * rectified_x
++                               + coefficients[1] * channel_y
 +                               + coefficients[2]) / denominator;
-+          source_y[channel] = (coefficients[3] * x
-+                               + coefficients[4] * rectified_y
++            source_y[channel] = (coefficients[3] * rectified_x
++                               + coefficients[4] * channel_y
 +                               + coefficients[5]) / denominator;
++          }
 +          if (source_x[channel] < 0 || source_y[channel] < 0
 +              || source_x[channel] > source_width - 1
 +              || source_y[channel] > source_height - 1)
@@ -779,12 +964,12 @@ index 64eb90f..70b02fd 100644
 +  s->buff_rx[side] = (int)output_bytes;
 +
 +  DBG (15, "buffer_sv600_perspective: threshold=%d corners="
-+       "%d:%d,%d:%d,%d:%d,%d:%d output=%dx%d\n",
++       "%.0f:%.0f,%.0f:%.0f,%.0f:%.0f,%.0f:%.0f output=%dx%d\n",
 +       threshold,
-+       best_x[0] * step, best_y[0] * step,
-+       best_x[1] * step, best_y[1] * step,
-+       best_x[2] * step, best_y[2] * step,
-+       best_x[3] * step, best_y[3] * step,
++       corners[0].x, corners[0].y,
++       corners[1].x, corners[1].y,
++       corners[2].x, corners[2].y,
++       corners[3].x, corners[3].y,
 +       output_width, output_height);
 +
 +cleanup:
