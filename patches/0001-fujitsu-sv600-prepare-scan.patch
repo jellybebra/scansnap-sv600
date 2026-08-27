@@ -1,10 +1,10 @@
 diff --git a/backend/fujitsu.c b/backend/fujitsu.c
-index 64eb90f..8006a34 100644
+index 64eb90f..70b02fd 100644
 --- a/backend/fujitsu.c
 +++ b/backend/fujitsu.c
 @@ -741,0 +742 @@
 +#define min(a,b) (((a)<(b))?(a):(b))
-@@ -2174,0 +2176,20 @@ init_model (struct fujitsu *s)
+@@ -2174,0 +2176,25 @@ init_model (struct fujitsu *s)
 +  /* The SV600 rejects the generic SET WINDOW probes used to discover color
 +   * interlacing.  Its firmware accepts dot-interleaved RGB, so declare that
 +   * format up front and let init_interlace() return immediately.
@@ -23,12 +23,17 @@ index 64eb90f..8006a34 100644
 +    s->color_interlace = COLOR_INTERLACE_RGB;
 +    s->duplex_interlace = DUPLEX_INTERLACE_NONE;
 +    s->reverse_by_mode[MODE_COLOR] = 0;
++
++    /* The firmware only accepts an RGB window, but the backend already knows
++     * how to expose a software grayscale mode backed by a color acquisition.
++     * Mark it as emulated so GUI frontends can request standard 8-bit Gray. */
++    s->can_mode[MODE_GRAYSCALE] = 2;
 +  }
 +
-@@ -2177 +2198 @@ init_model (struct fujitsu *s)
+@@ -2177 +2203 @@ init_model (struct fujitsu *s)
 -  if (strstr (s->model_name, "M3091")
 +  else if (strstr (s->model_name, "M3091")
-@@ -2591,0 +2613,8 @@ init_user (struct fujitsu *s)
+@@ -2591,0 +2618,8 @@ init_user (struct fujitsu *s)
 +  /* ScanSnap Home straightens and crops the SV600's projected camera image
 +   * in software.  Enable the equivalent buffered SANE path by default so
 +   * ordinary frontends receive a document instead of the raw A3 scene. */
@@ -37,15 +42,15 @@ index 64eb90f..8006a34 100644
 +    s->swcrop = 1;
 +  }
 +
-@@ -6732 +6761,4 @@ mode_select_auto (struct fujitsu *s)
+@@ -6732 +6766,4 @@ mode_select_auto (struct fujitsu *s)
 -  set_MSEL_overscan(page, s->overscan);
 +  if (strstr(s->model_name, "SV600"))
 +    set_MSEL_overscan(page, MSEL_ON);
 +  else
 +    set_MSEL_overscan(page, s->overscan);
-@@ -6952,0 +6985 @@ sane_start (SANE_Handle handle)
+@@ -6952,0 +6990 @@ sane_start (SANE_Handle handle)
 +  int is_sv600 = strstr(s->model_name, "SV600") != NULL;
-@@ -7019,0 +7053,10 @@ sane_start (SANE_Handle handle)
+@@ -7019,0 +7058,10 @@ sane_start (SANE_Handle handle)
 +      /* The SV600 performs this preparation before MODE SELECT, SET WINDOW,
 +       * and SCAN in the original driver. */
 +      if (is_sv600) {
@@ -56,7 +61,7 @@ index 64eb90f..8006a34 100644
 +        }
 +      }
 +
-@@ -7025,4 +7068,14 @@ sane_start (SANE_Handle handle)
+@@ -7025,4 +7073,14 @@ sane_start (SANE_Handle handle)
 -      /* enable double feed detection */
 -      ret = mode_select_df(s);
 -      if (ret != SANE_STATUS_GOOD)
@@ -75,7 +80,7 @@ index 64eb90f..8006a34 100644
 +        ret = mode_select_df(s);
 +        if (ret != SANE_STATUS_GOOD)
 +          DBG (5, "sane_start: WARNING: cannot mode_select_df %d\n", ret);
-@@ -7030,4 +7083,4 @@ sane_start (SANE_Handle handle)
+@@ -7030,4 +7088,4 @@ sane_start (SANE_Handle handle)
 -      /* enable background color setting */
 -      ret = mode_select_bg(s);
 -      if (ret != SANE_STATUS_GOOD)
@@ -84,7 +89,7 @@ index 64eb90f..8006a34 100644
 +        ret = mode_select_bg(s);
 +        if (ret != SANE_STATUS_GOOD)
 +          DBG (5, "sane_start: WARNING: cannot mode_select_bg %d\n", ret);
-@@ -7035,4 +7088,4 @@ sane_start (SANE_Handle handle)
+@@ -7035,4 +7093,4 @@ sane_start (SANE_Handle handle)
 -      /* enable dropout color setting */
 -      ret = mode_select_dropout(s);
 -      if (ret != SANE_STATUS_GOOD)
@@ -93,7 +98,7 @@ index 64eb90f..8006a34 100644
 +        ret = mode_select_dropout(s);
 +        if (ret != SANE_STATUS_GOOD)
 +          DBG (5, "sane_start: WARNING: cannot mode_select_dropout %d\n", ret);
-@@ -7040,4 +7093,4 @@ sane_start (SANE_Handle handle)
+@@ -7040,4 +7098,4 @@ sane_start (SANE_Handle handle)
 -      /* enable buffering setting */
 -      ret = mode_select_buff(s);
 -      if (ret != SANE_STATUS_GOOD)
@@ -102,7 +107,7 @@ index 64eb90f..8006a34 100644
 +        ret = mode_select_buff(s);
 +        if (ret != SANE_STATUS_GOOD)
 +          DBG (5, "sane_start: WARNING: cannot mode_select_buff %d\n", ret);
-@@ -7045,4 +7098,4 @@ sane_start (SANE_Handle handle)
+@@ -7045,4 +7103,4 @@ sane_start (SANE_Handle handle)
 -      /* enable prepick setting */
 -      ret = mode_select_prepick(s);
 -      if (ret != SANE_STATUS_GOOD)
@@ -111,7 +116,7 @@ index 64eb90f..8006a34 100644
 +        ret = mode_select_prepick(s);
 +        if (ret != SANE_STATUS_GOOD)
 +          DBG (5, "sane_start: WARNING: cannot mode_select_prepick %d\n", ret);
-@@ -7050,4 +7103,5 @@ sane_start (SANE_Handle handle)
+@@ -7050,4 +7108,5 @@ sane_start (SANE_Handle handle)
 -      /* send endorser config */
 -      ret = send_endorser(s);
 -      if (ret != SANE_STATUS_GOOD)
@@ -121,13 +126,13 @@ index 64eb90f..8006a34 100644
 +        if (ret != SANE_STATUS_GOOD)
 +          DBG (5, "sane_start: WARNING: cannot send_endorser %d\n", ret);
 +      }
-@@ -7063 +7117 @@ sane_start (SANE_Handle handle)
+@@ -7063 +7122 @@ sane_start (SANE_Handle handle)
 -      if ( s->window_gamma ){
 +      if (s->window_gamma && !is_sv600){
-@@ -7070 +7124 @@ sane_start (SANE_Handle handle)
+@@ -7070 +7129 @@ sane_start (SANE_Handle handle)
 -      if (s->need_q_table){
 +      if (s->need_q_table && !is_sv600){
-@@ -7077,4 +7131,6 @@ sane_start (SANE_Handle handle)
+@@ -7077,4 +7136,6 @@ sane_start (SANE_Handle handle)
 -      ret = endorser(s);
 -      if (ret != SANE_STATUS_GOOD) {
 -        DBG (5, "sane_start: ERROR: cannot start/stop endorser\n");
@@ -138,7 +143,7 @@ index 64eb90f..8006a34 100644
 +          DBG (5, "sane_start: ERROR: cannot start/stop endorser\n");
 +          goto errors;
 +        }
-@@ -7084,3 +7140,5 @@ sane_start (SANE_Handle handle)
+@@ -7084,3 +7145,5 @@ sane_start (SANE_Handle handle)
 -      ret = scanner_control(s, SC_function_lamp_on);
 -      if (ret != SANE_STATUS_GOOD) {
 -        DBG (5, "sane_start: WARNING: cannot start lamp, ignoring\n");
@@ -147,26 +152,26 @@ index 64eb90f..8006a34 100644
 +        if (ret != SANE_STATUS_GOOD) {
 +          DBG (5, "sane_start: WARNING: cannot start lamp, ignoring\n");
 +        }
-@@ -7143,0 +7202,6 @@ sane_start (SANE_Handle handle)
+@@ -7143,0 +7207,6 @@ sane_start (SANE_Handle handle)
 +      /* The Windows driver enforces a model-specific class-1 settling time
 +       * after SET WINDOW and before SCAN.  A conservative half-second delay
 +       * avoids racing the SV600 illumination mechanics. */
 +      if (is_sv600)
 +        usleep(500000);
 +
-@@ -7251,0 +7316,3 @@ sane_start (SANE_Handle handle)
+@@ -7251,0 +7321,3 @@ sane_start (SANE_Handle handle)
 +    if(is_sv600 && s->swdeskew && s->swcrop){
 +      buffer_sv600_perspective(s,s->side);
 +    }
-@@ -7522,0 +7590 @@ set_window (struct fujitsu *s)
+@@ -7522,0 +7595 @@ set_window (struct fujitsu *s)
 +  int is_sv600 = strstr(s->model_name, "SV600") != NULL;
-@@ -7539,0 +7608 @@ set_window (struct fujitsu *s)
+@@ -7539,0 +7613 @@ set_window (struct fujitsu *s)
 +  int width = 0;
-@@ -7569 +7638,2 @@ set_window (struct fujitsu *s)
+@@ -7569 +7643,2 @@ set_window (struct fujitsu *s)
 -  set_WD_width (desc1, s->s_params.pixels_per_line * 1200/s->resolution_x);
 +  width = s->s_params.pixels_per_line * 1200/s->resolution_x;
 +  set_WD_width (desc1, width);
-@@ -7742,2 +7812,17 @@ set_window (struct fujitsu *s)
+@@ -7742,2 +7817,17 @@ set_window (struct fujitsu *s)
 -  /* common to all vuids */
 -  if(s->source == SOURCE_FLATBED){
 +  /* The SV600 Windows minidriver's SendSWDData() emits a Comet-specific
@@ -186,7 +191,7 @@ index 64eb90f..8006a34 100644
 +
 +  /* common to all other vuids */
 +  else if(s->source == SOURCE_FLATBED){
-@@ -7948,0 +8034,120 @@ object_position (struct fujitsu *s, int action)
+@@ -7948,0 +8039,120 @@ object_position (struct fujitsu *s, int action)
 +static SANE_Status
 +sv600_send_diagnostic (struct fujitsu *s, const char *name,
 +                       const unsigned char *payload, size_t payload_len)
@@ -307,7 +312,7 @@ index 64eb90f..8006a34 100644
 +  return SANE_STATUS_GOOD;
 +}
 +
-@@ -10273,0 +10479,482 @@ buffer_crop(struct fujitsu *s, int side)
+@@ -10273,0 +10484,482 @@ buffer_crop(struct fujitsu *s, int side)
 +struct sv600_point {
 +  double x;
 +  double y;
