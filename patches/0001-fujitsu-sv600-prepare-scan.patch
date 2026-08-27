@@ -1,5 +1,5 @@
 diff --git a/backend/fujitsu.c b/backend/fujitsu.c
-index 64eb90f..8b4c35e 100644
+index 64eb90f..8006a34 100644
 --- a/backend/fujitsu.c
 +++ b/backend/fujitsu.c
 @@ -741,0 +742 @@
@@ -307,7 +307,7 @@ index 64eb90f..8b4c35e 100644
 +  return SANE_STATUS_GOOD;
 +}
 +
-@@ -10273,0 +10479,448 @@ buffer_crop(struct fujitsu *s, int side)
+@@ -10273,0 +10479,482 @@ buffer_crop(struct fujitsu *s, int side)
 +struct sv600_point {
 +  double x;
 +  double y;
@@ -408,7 +408,7 @@ index 64eb90f..8b4c35e 100644
 + * resolution-independent and suitable for the geometrically similar A3 page.
 + */
 +static double
-+sv600_flat_dewarp_y(int x, int y, int width, int height)
++sv600_flat_dewarp_y(int x, double y, int width, int height)
 +{
 +  static const double coefficients[3][2] = {
 +    {-5.25319, 17.87414},
@@ -428,6 +428,28 @@ index 64eb90f..8b4c35e 100644
 +  }
 +
 +  return y + displacement * height / 877.0;
++}
++
++/* The red and blue SV600 images have opposite vertical scale errors relative
++ * to green.  They are nearly independent of x, but grow quadratically down
++ * the scan: about one pixel near the top and fourteen pixels at the bottom of
++ * a 300 dpi A4 page.  Register the channels before the projective sampling so
++ * correction costs no additional interpolation pass. */
++static double
++sv600_channel_registration_y(int channel, double y, int height)
++{
++  static const double coefficients[3][3] = {
++    {1.10252569215e-6, -3.75043422725e-5, 0.775689500893},
++    {0, 0, 0},
++    {-1.09427345984e-6, -1.58936027554e-5, -0.728315456674}
++  };
++  double scale = height / 3508.0;
++  double calibration_y = y / scale;
++  double displacement = (coefficients[channel][0] * calibration_y
++    + coefficients[channel][1]) * calibration_y
++    + coefficients[channel][2];
++
++  return y + displacement * scale;
 +}
 +
 +/* The SV600 scans a projected view of the mat.  ScanSnap Home identifies the
@@ -687,40 +709,52 @@ index 64eb90f..8b4c35e 100644
 +    for (y = 0; y < output_height; y++) {
 +      int x;
 +      for (x = 0; x < output_width; x++) {
-+        double rectified_y = sv600_flat_dewarp_y(x, y, output_width,
-+                                                 output_height);
-+        double denominator = coefficients[6] * x
-+          + coefficients[7] * rectified_y + 1;
-+        double source_x = (coefficients[0] * x
-+                           + coefficients[1] * rectified_y
-+                           + coefficients[2]) / denominator;
-+        double source_y = (coefficients[3] * x
-+                           + coefficients[4] * rectified_y
-+                           + coefficients[5]) / denominator;
++        double source_x[3];
++        double source_y[3];
 +        unsigned char *output = corrected
 +          + ((size_t)y * output_width + x) * 3;
++        int valid = 1;
++        int channel;
 +
-+        if (source_x < 0 || source_y < 0
-+            || source_x > source_width - 1 || source_y > source_height - 1) {
++        for (channel = 0; channel < 3; channel++) {
++          double channel_y = sv600_channel_registration_y(channel, y,
++                                                           output_height);
++          double rectified_y = sv600_flat_dewarp_y(x, channel_y,
++                                                   output_width,
++                                                   output_height);
++          double denominator = coefficients[6] * x
++            + coefficients[7] * rectified_y + 1;
++          source_x[channel] = (coefficients[0] * x
++                               + coefficients[1] * rectified_y
++                               + coefficients[2]) / denominator;
++          source_y[channel] = (coefficients[3] * x
++                               + coefficients[4] * rectified_y
++                               + coefficients[5]) / denominator;
++          if (source_x[channel] < 0 || source_y[channel] < 0
++              || source_x[channel] > source_width - 1
++              || source_y[channel] > source_height - 1)
++            valid = 0;
++        }
++
++        if (!valid) {
 +          output[0] = output[1] = output[2] = 255;
 +        }
 +        else {
-+          int x0 = (int)source_x;
-+          int y0 = (int)source_y;
-+          int x1 = min(x0 + 1, source_width - 1);
-+          int y1 = min(y0 + 1, source_height - 1);
-+          double dx = source_x - x0;
-+          double dy = source_y - y0;
-+          const unsigned char *top_left = s->buffers[side]
-+            + (size_t)y0 * params->bytes_per_line + x0 * 3;
-+          const unsigned char *top_right = s->buffers[side]
-+            + (size_t)y0 * params->bytes_per_line + x1 * 3;
-+          const unsigned char *bottom_left = s->buffers[side]
-+            + (size_t)y1 * params->bytes_per_line + x0 * 3;
-+          const unsigned char *bottom_right = s->buffers[side]
-+            + (size_t)y1 * params->bytes_per_line + x1 * 3;
-+          int channel;
 +          for (channel = 0; channel < 3; channel++) {
++            int x0 = (int)source_x[channel];
++            int y0 = (int)source_y[channel];
++            int x1 = min(x0 + 1, source_width - 1);
++            int y1 = min(y0 + 1, source_height - 1);
++            double dx = source_x[channel] - x0;
++            double dy = source_y[channel] - y0;
++            const unsigned char *top_left = s->buffers[side]
++              + (size_t)y0 * params->bytes_per_line + x0 * 3;
++            const unsigned char *top_right = s->buffers[side]
++              + (size_t)y0 * params->bytes_per_line + x1 * 3;
++            const unsigned char *bottom_left = s->buffers[side]
++              + (size_t)y1 * params->bytes_per_line + x0 * 3;
++            const unsigned char *bottom_right = s->buffers[side]
++              + (size_t)y1 * params->bytes_per_line + x1 * 3;
 +            double top = top_left[channel] * (1 - dx) + top_right[channel] * dx;
 +            double bottom = bottom_left[channel] * (1 - dx)
 +              + bottom_right[channel] * dx;
