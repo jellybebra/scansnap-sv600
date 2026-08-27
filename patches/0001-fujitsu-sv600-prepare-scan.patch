@@ -1,5 +1,5 @@
 diff --git a/backend/fujitsu.c b/backend/fujitsu.c
-index 64eb90f..905b659 100644
+index 64eb90f..62e6cce 100644
 --- a/backend/fujitsu.c
 +++ b/backend/fujitsu.c
 @@ -741,0 +742 @@
@@ -377,7 +377,7 @@ index 64eb90f..905b659 100644
 +  return SANE_STATUS_GOOD;
 +}
 +
-@@ -10273,0 +10534,794 @@ buffer_crop(struct fujitsu *s, int side)
+@@ -10273,0 +10534,914 @@ buffer_crop(struct fujitsu *s, int side)
 +struct sv600_point {
 +  double x;
 +  double y;
@@ -695,12 +695,114 @@ index 64eb90f..905b659 100644
 +  return 255;
 +}
 +
++/* Find dark pixels that are eight-connected to one requested image edge.
++ * Restrict the flood fill to a narrow band: interior text must not influence
++ * document cropping even when it is very dark. */
++static int
++sv600_connected_border_depth(const unsigned char *image,
++                             int width, int height, int side,
++                             int maximum_depth, int threshold)
++{
++  int band_width = side < 2 ? width : maximum_depth + 1;
++  int band_height = side < 2 ? maximum_depth + 1 : height;
++  int band_size = band_width * band_height;
++  unsigned char *mask = NULL;
++  int *queue = NULL;
++  int head = 0;
++  int tail = 0;
++  int deepest = -1;
++  int band_y;
++
++  if (maximum_depth < 0 || band_width < 1 || band_height < 1)
++    return -1;
++  mask = malloc((size_t)band_size);
++  queue = malloc((size_t)band_size * sizeof(*queue));
++  if (!mask || !queue) {
++    DBG (5, "sv600_connected_border_depth: cannot allocate edge buffers\n");
++    free(queue);
++    free(mask);
++    return -1;
++  }
++
++  for (band_y = 0; band_y < band_height; band_y++) {
++    int band_x;
++    for (band_x = 0; band_x < band_width; band_x++) {
++      int distance = side < 2 ? band_y : band_x;
++      int x = side < 2 ? band_x
++        : side == 2 ? distance : width - 1 - distance;
++      int y = side < 2
++        ? side == 0 ? distance : height - 1 - distance
++        : band_y;
++      const unsigned char *pixel = image
++        + ((size_t)y * width + x) * 3;
++      mask[band_y * band_width + band_x]
++        = sv600_luminance(pixel) < threshold ? 1 : 0;
++    }
++  }
++
++  if (side < 2) {
++    int x;
++    for (x = 0; x < band_width; x++) {
++      if (mask[x] == 1) {
++        mask[x] = 2;
++        queue[tail++] = x;
++      }
++    }
++  }
++  else {
++    int y;
++    for (y = 0; y < band_height; y++) {
++      int position = y * band_width;
++      if (mask[position] == 1) {
++        mask[position] = 2;
++        queue[tail++] = position;
++      }
++    }
++  }
++
++  while (head < tail) {
++    int position = queue[head++];
++    int band_x = position % band_width;
++    int current_y = position / band_width;
++    int distance = side < 2 ? current_y : band_x;
++    int offset_y;
++
++    deepest = max(deepest, distance);
++    for (offset_y = -1; offset_y <= 1; offset_y++) {
++      int neighbour_y = current_y + offset_y;
++      int offset_x;
++      if (neighbour_y < 0 || neighbour_y >= band_height)
++        continue;
++      for (offset_x = -1; offset_x <= 1; offset_x++) {
++        int neighbour_x = band_x + offset_x;
++        int neighbour;
++        if ((!offset_x && !offset_y)
++            || neighbour_x < 0 || neighbour_x >= band_width)
++          continue;
++        neighbour = neighbour_y * band_width + neighbour_x;
++        if (mask[neighbour] == 1) {
++          mask[neighbour] = 2;
++          queue[tail++] = neighbour;
++        }
++      }
++    }
++  }
++
++  free(queue);
++  free(mask);
++  return deepest;
++}
++
 +/* Measure each edge against nearby clean paper rather than reserving a fixed
 + * white frame.  The twentieth percentile notices a broad table/shadow strip
-+ * but ignores ordinary sparse text.  Only the contaminated amount is removed.
++ * but ignores ordinary sparse text.  A second, darker threshold flood-fills
++ * pixels connected to the outer boundary, catching hairlines and corner
++ * wedges that occupy too little of a row for the percentile to notice.  Only
++ * affected sides receive the one-millimetre print-safety allowance.
 + */
 +static void
 +sv600_detect_clean_crop(const unsigned char *image, int width, int height,
++                        int safety_x, int safety_y,
 +                        int *crop_left, int *crop_top,
 +                        int *crop_right, int *crop_bottom)
 +{
@@ -710,12 +812,15 @@ index 64eb90f..905b659 100644
 +  int vertical_start = height / 20;
 +  int vertical_end = height - vertical_start;
 +  int *crops[4] = {crop_top, crop_bottom, crop_left, crop_right};
++  int connected_depths[4] = {-1, -1, -1, -1};
 +  int side;
 +
 +  *crop_left = *crop_top = *crop_right = *crop_bottom = 0;
 +  for (side = 0; side < 4; side++) {
 +    int reference = 0;
 +    int threshold;
++    int dark_threshold;
++    int safety;
 +    int distance;
 +
 +    for (distance = maximum_crop * 3 / 4;
@@ -740,6 +845,12 @@ index 64eb90f..905b659 100644
 +    }
 +
 +    threshold = max(0, reference - 12);
++    dark_threshold = max(64, min(160, reference - 32));
++    safety = side < 2 ? safety_y : safety_x;
++    safety = max(1, min(maximum_crop - 1, safety));
++    connected_depths[side] = sv600_connected_border_depth(
++      image, width, height, side, maximum_crop - safety,
++      dark_threshold);
 +    for (distance = 0; distance <= maximum_crop; distance++) {
 +      int horizontal = side < 2;
 +      int coordinate;
@@ -760,7 +871,14 @@ index 64eb90f..905b659 100644
 +      if (brightness < threshold)
 +        *crops[side] = min(maximum_crop, distance + 2);
 +    }
++    if (*crops[side] || connected_depths[side] >= 0)
++      *crops[side] = min(maximum_crop,
++        max(*crops[side], connected_depths[side] + 1) + safety);
 +  }
++
++  DBG (15, "sv600_detect_clean_crop: connected=%d:%d:%d:%d safety=%d:%d\n",
++       connected_depths[2], connected_depths[0],
++       connected_depths[3], connected_depths[1], safety_x, safety_y);
 +}
 +
 +/* The SV600 scans a projected view of the mat.  ScanSnap Home identifies the
@@ -1096,6 +1214,8 @@ index 64eb90f..905b659 100644
 +                           output_width, output_height, output_portrait,
 +                           coefficients, 0, 0, 0, 0);
 +  sv600_detect_clean_crop(corrected, output_width, output_height,
++                          max(1, (int)(s->resolution_x / 25.4 + 0.5)),
++                          max(1, (int)(s->resolution_y / 25.4 + 0.5)),
 +                          &crop_left, &crop_top, &crop_right, &crop_bottom);
 +  if (crop_left || crop_top || crop_right || crop_bottom)
 +    sv600_render_perspective(s, side, corrected,
