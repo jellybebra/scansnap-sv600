@@ -55,7 +55,7 @@ jobs:
           COMMIT_SHA: ${{ matrix.commit }}
         run: |
           short_sha="${COMMIT_SHA::8}"
-          echo "VERSION=0.1.0+git${GITHUB_RUN_NUMBER}.${short_sha}" >> "$GITHUB_ENV"
+          echo "VERSION=0.2.0+git${GITHUB_RUN_NUMBER}.${short_sha}" >> "$GITHUB_ENV"
           echo "TAG=build-${GITHUB_RUN_NUMBER}-${short_sha}" >> "$GITHUB_ENV"
 
       - name: Build Debian 10 and Astra compatible package

@@ -1,10 +1,17 @@
 diff --git a/backend/fujitsu.c b/backend/fujitsu.c
-index 64eb90f..62e6cce 100644
+index 64eb90f2..bfe8037e 100644
 --- a/backend/fujitsu.c
 +++ b/backend/fujitsu.c
-@@ -741,0 +742 @@
+@@ -656,0 +657 @@
++#include <stdint.h>
+@@ -667,0 +669,4 @@
++#include "sv600-optical-map-deltas.inc"
++
++#define SV600_FACTORY_AUTO_ROWS 2781
++#define SV600_FACTORY_A3_ROWS 3542
+@@ -741,0 +747 @@
 +#define min(a,b) (((a)<(b))?(a):(b))
-@@ -2174,0 +2176,25 @@ init_model (struct fujitsu *s)
+@@ -2174,0 +2181,26 @@ init_model (struct fujitsu *s)
 +  /* The SV600 rejects the generic SET WINDOW probes used to discover color
 +   * interlacing.  Its firmware accepts dot-interleaved RGB, so declare that
 +   * format up front and let init_interlace() return immediately.
@@ -28,12 +35,13 @@ index 64eb90f..62e6cce 100644
 +     * how to expose a software grayscale mode backed by a color acquisition.
 +     * Mark it as emulated so GUI frontends can request standard 8-bit Gray. */
 +    s->can_mode[MODE_GRAYSCALE] = 2;
++    s->can_mode[MODE_LINEART] = 2;
 +  }
 +
-@@ -2177 +2203 @@ init_model (struct fujitsu *s)
+@@ -2177 +2209 @@ init_model (struct fujitsu *s)
 -  if (strstr (s->model_name, "M3091")
 +  else if (strstr (s->model_name, "M3091")
-@@ -2591,0 +2618,8 @@ init_user (struct fujitsu *s)
+@@ -2591,0 +2624,8 @@ init_user (struct fujitsu *s)
 +  /* ScanSnap Home straightens and crops the SV600's projected camera image
 +   * in software.  Enable the equivalent buffered SANE path by default so
 +   * ordinary frontends receive a document instead of the raw A3 scene. */
@@ -42,34 +50,54 @@ index 64eb90f..62e6cce 100644
 +    s->swcrop = 1;
 +  }
 +
-@@ -6732 +6766,4 @@ mode_select_auto (struct fujitsu *s)
+@@ -6732 +6772,4 @@ mode_select_auto (struct fujitsu *s)
 -  set_MSEL_overscan(page, s->overscan);
 +  if (strstr(s->model_name, "SV600"))
 +    set_MSEL_overscan(page, MSEL_ON);
 +  else
 +    set_MSEL_overscan(page, s->overscan);
-@@ -6952,0 +6990,7 @@ sane_start (SANE_Handle handle)
+@@ -6952,0 +6996,8 @@ sane_start (SANE_Handle handle)
 +  int is_sv600 = strstr(s->model_name, "SV600") != NULL;
 +  int sv600_full_frame = 0;
 +  int sv600_requested_portrait = 0;
++  int sv600_fixed_page = 0;
 +  int saved_tl_x = 0;
 +  int saved_tl_y = 0;
 +  int saved_br_x = 0;
 +  int saved_br_y = 0;
-@@ -6987,0 +7032,20 @@ sane_start (SANE_Handle handle)
+@@ -6987,0 +7039,39 @@ sane_start (SANE_Handle handle)
 +      /* Frontends such as Simple Scan express A4 as a portrait scan window.
 +       * That window clips a physically landscape page before software can
 +       * discover its orientation.  Acquire the whole SV600 mat internally;
 +       * the perspective pass below returns only the detected document. */
-+      if (is_sv600 && s->swdeskew && s->swcrop) {
++      if (is_sv600) {
++        double requested_width;
++        double requested_height;
++        double requested_long;
++        double requested_short;
 +        saved_tl_x = s->tl_x;
 +        saved_tl_y = s->tl_y;
 +        saved_br_x = s->br_x;
 +        saved_br_y = s->br_y;
 +        sv600_requested_portrait = saved_br_y - saved_tl_y
 +          > saved_br_x - saved_tl_x;
-+        DBG (15, "sane_start: SV600 requested orientation=%s\n",
-+             sv600_requested_portrait ? "portrait" : "landscape");
++        requested_width = (saved_br_x - saved_tl_x) * MM_PER_UNIT_UNFIX;
++        requested_height = (saved_br_y - saved_tl_y) * MM_PER_UNIT_UNFIX;
++        requested_long = max(requested_width, requested_height);
++        requested_short = min(requested_width, requested_height);
++        if (fabs(requested_long - 420.0) < 3.0
++            && fabs(requested_short - 297.0) < 3.0)
++          sv600_fixed_page = 3;
++        else if (fabs(requested_long - 297.0) < 3.0
++                 && fabs(requested_short - 210.0) < 3.0)
++          sv600_fixed_page = 4;
++        else if (fabs(requested_long - 210.0) < 3.0
++                 && fabs(requested_short - 148.0) < 3.0)
++          sv600_fixed_page = 5;
++        DBG (15, "sane_start: SV600 requested=%.2fx%.2f orientation=%s fixed=%d\n",
++             requested_width, requested_height,
++             sv600_requested_portrait ? "portrait" : "landscape",
++             sv600_fixed_page);
 +        s->tl_x = 0;
 +        s->tl_y = 0;
 +        s->br_x = s->max_x;
@@ -77,7 +105,7 @@ index 64eb90f..62e6cce 100644
 +        sv600_full_frame = 1;
 +      }
 +
-@@ -7019,0 +7084,10 @@ sane_start (SANE_Handle handle)
+@@ -7019,0 +7110,10 @@ sane_start (SANE_Handle handle)
 +      /* The SV600 performs this preparation before MODE SELECT, SET WINDOW,
 +       * and SCAN in the original driver. */
 +      if (is_sv600) {
@@ -88,7 +116,7 @@ index 64eb90f..62e6cce 100644
 +        }
 +      }
 +
-@@ -7025,4 +7099,14 @@ sane_start (SANE_Handle handle)
+@@ -7025,4 +7125,14 @@ sane_start (SANE_Handle handle)
 -      /* enable double feed detection */
 -      ret = mode_select_df(s);
 -      if (ret != SANE_STATUS_GOOD)
@@ -107,7 +135,7 @@ index 64eb90f..62e6cce 100644
 +        ret = mode_select_df(s);
 +        if (ret != SANE_STATUS_GOOD)
 +          DBG (5, "sane_start: WARNING: cannot mode_select_df %d\n", ret);
-@@ -7030,4 +7114,4 @@ sane_start (SANE_Handle handle)
+@@ -7030,4 +7140,4 @@ sane_start (SANE_Handle handle)
 -      /* enable background color setting */
 -      ret = mode_select_bg(s);
 -      if (ret != SANE_STATUS_GOOD)
@@ -116,7 +144,7 @@ index 64eb90f..62e6cce 100644
 +        ret = mode_select_bg(s);
 +        if (ret != SANE_STATUS_GOOD)
 +          DBG (5, "sane_start: WARNING: cannot mode_select_bg %d\n", ret);
-@@ -7035,4 +7119,4 @@ sane_start (SANE_Handle handle)
+@@ -7035,4 +7145,4 @@ sane_start (SANE_Handle handle)
 -      /* enable dropout color setting */
 -      ret = mode_select_dropout(s);
 -      if (ret != SANE_STATUS_GOOD)
@@ -125,7 +153,7 @@ index 64eb90f..62e6cce 100644
 +        ret = mode_select_dropout(s);
 +        if (ret != SANE_STATUS_GOOD)
 +          DBG (5, "sane_start: WARNING: cannot mode_select_dropout %d\n", ret);
-@@ -7040,4 +7124,4 @@ sane_start (SANE_Handle handle)
+@@ -7040,4 +7150,4 @@ sane_start (SANE_Handle handle)
 -      /* enable buffering setting */
 -      ret = mode_select_buff(s);
 -      if (ret != SANE_STATUS_GOOD)
@@ -134,7 +162,7 @@ index 64eb90f..62e6cce 100644
 +        ret = mode_select_buff(s);
 +        if (ret != SANE_STATUS_GOOD)
 +          DBG (5, "sane_start: WARNING: cannot mode_select_buff %d\n", ret);
-@@ -7045,4 +7129,4 @@ sane_start (SANE_Handle handle)
+@@ -7045,4 +7155,4 @@ sane_start (SANE_Handle handle)
 -      /* enable prepick setting */
 -      ret = mode_select_prepick(s);
 -      if (ret != SANE_STATUS_GOOD)
@@ -143,7 +171,7 @@ index 64eb90f..62e6cce 100644
 +        ret = mode_select_prepick(s);
 +        if (ret != SANE_STATUS_GOOD)
 +          DBG (5, "sane_start: WARNING: cannot mode_select_prepick %d\n", ret);
-@@ -7050,4 +7134,5 @@ sane_start (SANE_Handle handle)
+@@ -7050,4 +7160,5 @@ sane_start (SANE_Handle handle)
 -      /* send endorser config */
 -      ret = send_endorser(s);
 -      if (ret != SANE_STATUS_GOOD)
@@ -153,13 +181,13 @@ index 64eb90f..62e6cce 100644
 +        if (ret != SANE_STATUS_GOOD)
 +          DBG (5, "sane_start: WARNING: cannot send_endorser %d\n", ret);
 +      }
-@@ -7063 +7148 @@ sane_start (SANE_Handle handle)
+@@ -7063 +7174 @@ sane_start (SANE_Handle handle)
 -      if ( s->window_gamma ){
 +      if (s->window_gamma && !is_sv600){
-@@ -7070 +7155 @@ sane_start (SANE_Handle handle)
+@@ -7070 +7181 @@ sane_start (SANE_Handle handle)
 -      if (s->need_q_table){
 +      if (s->need_q_table && !is_sv600){
-@@ -7077,4 +7162,6 @@ sane_start (SANE_Handle handle)
+@@ -7077,4 +7188,6 @@ sane_start (SANE_Handle handle)
 -      ret = endorser(s);
 -      if (ret != SANE_STATUS_GOOD) {
 -        DBG (5, "sane_start: ERROR: cannot start/stop endorser\n");
@@ -170,7 +198,7 @@ index 64eb90f..62e6cce 100644
 +          DBG (5, "sane_start: ERROR: cannot start/stop endorser\n");
 +          goto errors;
 +        }
-@@ -7084,3 +7171,5 @@ sane_start (SANE_Handle handle)
+@@ -7084,3 +7197,5 @@ sane_start (SANE_Handle handle)
 -      ret = scanner_control(s, SC_function_lamp_on);
 -      if (ret != SANE_STATUS_GOOD) {
 -        DBG (5, "sane_start: WARNING: cannot start lamp, ignoring\n");
@@ -179,23 +207,42 @@ index 64eb90f..62e6cce 100644
 +        if (ret != SANE_STATUS_GOOD) {
 +          DBG (5, "sane_start: WARNING: cannot start lamp, ignoring\n");
 +        }
-@@ -7143,0 +7233,6 @@ sane_start (SANE_Handle handle)
+@@ -7143,0 +7259,6 @@ sane_start (SANE_Handle handle)
 +      /* The Windows driver enforces a model-specific class-1 settling time
 +       * after SET WINDOW and before SCAN.  A conservative half-second delay
 +       * avoids racing the SV600 illumination mechanics. */
 +      if (is_sv600)
 +        usleep(500000);
 +
-@@ -7245,3 +7340,5 @@ sane_start (SANE_Handle handle)
+@@ -7245,3 +7366,24 @@ sane_start (SANE_Handle handle)
 -    /* finished buffering, adjust image as required */
 -    if(s->swdeskew && (!s->hwdeskewcrop || s->req_driv_crop)){
 -      buffer_deskew(s,s->side);
++    if (is_sv600) {
++      ret = buffer_sv600_factory_remap(
++        s, s->side,
++        sv600_fixed_page ? SV600_FACTORY_A3_ROWS : SV600_FACTORY_AUTO_ROWS);
++      if (ret != SANE_STATUS_GOOD) {
++        DBG (5, "sane_start: ERROR: SV600 factory remap failed %d\n", ret);
++        goto errors;
++      }
++    }
++
++    if (is_sv600 && sv600_fixed_page) {
++      ret = buffer_sv600_fixed_flat(s, s->side, sv600_fixed_page,
++                                    sv600_requested_portrait);
++      if (ret != SANE_STATUS_GOOD) {
++        DBG (5, "sane_start: ERROR: SV600 fixed flat render failed %d\n", ret);
++        goto errors;
++      }
++    }
++
 +    /* The generic SANE deskew rotates a landscape SV600 projection before
 +     * the document corners are known and can clip it against the frame.
 +     * Detect and rectify SV600 pages directly from the untouched full image. */
-+    if(is_sv600 && s->swdeskew && s->swcrop){
++    else if(is_sv600 && s->swdeskew && s->swcrop){
 +      buffer_sv600_perspective(s,s->side,sv600_requested_portrait);
-@@ -7249,2 +7346,7 @@ sane_start (SANE_Handle handle)
+@@ -7249,2 +7391,14 @@ sane_start (SANE_Handle handle)
 -    if(s->swcrop && (!s->hwdeskewcrop || s->req_driv_crop)){
 -      buffer_crop(s,s->side);
 +    else {
@@ -205,14 +252,21 @@ index 64eb90f..62e6cce 100644
 +      if(s->swcrop && (!s->hwdeskewcrop || s->req_driv_crop)){
 +        buffer_crop(s,s->side);
 +      }
-@@ -7262,0 +7365,6 @@ sane_start (SANE_Handle handle)
++    }
++    if (is_sv600 && s->u_mode == MODE_LINEART) {
++      ret = buffer_sv600_align_binary_width(s, s->side);
++      if (ret != SANE_STATUS_GOOD) {
++        DBG (5, "sane_start: ERROR: SV600 binary alignment failed %d\n", ret);
++        goto errors;
++      }
+@@ -7262,0 +7417,6 @@ sane_start (SANE_Handle handle)
 +        if (sv600_full_frame) {
 +          s->tl_x = saved_tl_x;
 +          s->tl_y = saved_tl_y;
 +          s->br_x = saved_br_x;
 +          s->br_y = saved_br_y;
 +        }
-@@ -7268,0 +7377,7 @@ sane_start (SANE_Handle handle)
+@@ -7268,0 +7429,7 @@ sane_start (SANE_Handle handle)
 +  if (sv600_full_frame) {
 +    s->tl_x = saved_tl_x;
 +    s->tl_y = saved_tl_y;
@@ -220,7 +274,7 @@ index 64eb90f..62e6cce 100644
 +    s->br_y = saved_br_y;
 +  }
 +
-@@ -7280,0 +7396,7 @@ sane_start (SANE_Handle handle)
+@@ -7280,0 +7448,7 @@ sane_start (SANE_Handle handle)
 +    if (sv600_full_frame) {
 +      s->tl_x = saved_tl_x;
 +      s->tl_y = saved_tl_y;
@@ -228,15 +282,15 @@ index 64eb90f..62e6cce 100644
 +      s->br_y = saved_br_y;
 +    }
 +
-@@ -7522,0 +7645 @@ set_window (struct fujitsu *s)
+@@ -7522,0 +7697 @@ set_window (struct fujitsu *s)
 +  int is_sv600 = strstr(s->model_name, "SV600") != NULL;
-@@ -7539,0 +7663 @@ set_window (struct fujitsu *s)
+@@ -7539,0 +7715 @@ set_window (struct fujitsu *s)
 +  int width = 0;
-@@ -7569 +7693,2 @@ set_window (struct fujitsu *s)
+@@ -7569 +7745,2 @@ set_window (struct fujitsu *s)
 -  set_WD_width (desc1, s->s_params.pixels_per_line * 1200/s->resolution_x);
 +  width = s->s_params.pixels_per_line * 1200/s->resolution_x;
 +  set_WD_width (desc1, width);
-@@ -7742,2 +7867,17 @@ set_window (struct fujitsu *s)
+@@ -7742,2 +7919,17 @@ set_window (struct fujitsu *s)
 -  /* common to all vuids */
 -  if(s->source == SOURCE_FLATBED){
 +  /* The SV600 Windows minidriver's SendSWDData() emits a Comet-specific
@@ -256,7 +310,7 @@ index 64eb90f..62e6cce 100644
 +
 +  /* common to all other vuids */
 +  else if(s->source == SOURCE_FLATBED){
-@@ -7948,0 +8089,120 @@ object_position (struct fujitsu *s, int action)
+@@ -7948,0 +8141,120 @@ object_position (struct fujitsu *s, int action)
 +static SANE_Status
 +sv600_send_diagnostic (struct fujitsu *s, const char *name,
 +                       const unsigned char *payload, size_t payload_len)
@@ -377,7 +431,7 @@ index 64eb90f..62e6cce 100644
 +  return SANE_STATUS_GOOD;
 +}
 +
-@@ -10273,0 +10534,914 @@ buffer_crop(struct fujitsu *s, int side)
+@@ -10273,0 +10586,1069 @@ buffer_crop(struct fujitsu *s, int side)
 +struct sv600_point {
 +  double x;
 +  double y;
@@ -471,100 +525,263 @@ index 64eb90f..62e6cce 100644
 +  return 1;
 +}
 +
-+/* A flat calibration target shows a repeatable vertical sweep distortion in
-+ * the SV600 image after the projective transform.  The coefficients below
-+ * were fitted to long horizontal rules across an A4 target.  Expressing both
-+ * axes and the displacement in normalized coordinates makes the correction
-+ * resolution-independent and suitable for the geometrically similar A3 page.
-+ */
-+static double
-+sv600_flat_dewarp_y(double x, double y, int width, int height)
++/* Apply the exact factory 300 dpi correction map used by SV600u-x64.dll.
++ * The original manual kernel stores vertical coordinates in Q12 and the
++ * centre-based horizontal sampling step in Q19.  Each channel is remapped
++ * independently with bilinear interpolation.  Automatic detection uses the
++ * observed 2781-line A4 boundary; fixed flat formats keep the full A3 field. */
++static SANE_Status
++buffer_sv600_factory_remap(struct fujitsu *s, int side, int output_height)
 +{
-+  static const double coefficients[3][2] = {
-+    {-5.25319, 17.87414},
-+    {-4.03829, 16.15578},
-+    {10.15979, -27.12350}
-+  };
-+  double normalized_x = 2.0 * x / max(1, width - 1) - 1.0;
-+  double normalized_y = y / (double)max(1, height - 1);
-+  double x_power = normalized_x;
-+  double displacement = 0;
-+  int power;
++  SANE_Parameters *params = &s->s_params;
++  const int vertical_one = 1 << 12;
++  const int horizontal_one = 1 << 19;
++  int current[5];
++  int source_width = params->pixels_per_line;
++  int source_height = params->lines;
++  int source_stride = params->bytes_per_line;
++  size_t output_bytes = (size_t)source_width * output_height * 3;
++  unsigned char *corrected;
++  int y;
 +
-+  for (power = 0; power < 3; power++) {
-+    displacement += x_power * (coefficients[power][0]
-+      + coefficients[power][1] * normalized_y);
-+    x_power *= normalized_x;
++  DBG (10, "buffer_sv600_factory_remap: start\n");
++  if (params->format != SANE_FRAME_RGB || params->depth != 8
++      || source_stride < source_width * 3
++      || output_height < 1 || output_height > SV600_FACTORY_MAP_ROWS
++      || source_height < output_height
++      || output_bytes > (size_t)s->buff_tot[side]) {
++    DBG (5, "buffer_sv600_factory_remap: unsupported source %dx%d/%d\n",
++         source_width, source_height, source_stride);
++    return SANE_STATUS_INVAL;
 +  }
 +
-+  return y + displacement * height / 877.0;
++  corrected = malloc(output_bytes);
++  if (!corrected) {
++    DBG (5, "buffer_sv600_factory_remap: cannot allocate output\n");
++    return SANE_STATUS_NO_MEM;
++  }
++  memcpy(current, sv600_factory_map_first, sizeof(current));
++
++  for (y = 0; y < output_height; y++) {
++    int channel;
++    if (y) {
++      int item;
++      for (item = 0; item < 5; item++)
++        current[item] += sv600_factory_map_deltas[y - 1][item];
++    }
++
++    for (channel = 0; channel < 3; channel++) {
++      int vertical_offset = channel == 0 ? current[0]
++        : channel == 2 ? current[1] : 0;
++      int step = current[channel + 2];
++      int y_fixed = y * vertical_one + vertical_offset;
++      int source_y = y_fixed >> 12;
++      int y_fraction = y_fixed & (vertical_one - 1);
++      int center = source_width / 2;
++      int x_fixed = (step >> 1) + center * horizontal_one
++        - (horizontal_one >> 1) - step * center;
++      unsigned char *destination = corrected
++        + ((size_t)y * source_width * 3) + channel;
++      int x;
++
++      if (source_y < 0) {
++        source_y = 0;
++        y_fraction = 0;
++      }
++      else if (source_y >= source_height - 1) {
++        source_y = source_height - 1;
++        y_fraction = 0;
++      }
++
++      for (x = 0; x < source_width; x++, x_fixed += step) {
++        int source_x = x_fixed >> 19;
++        int x_fraction = x_fixed & (horizontal_one - 1);
++        const unsigned char *top;
++        unsigned int value;
++
++        if (source_x < 0) {
++          source_x = 0;
++          x_fraction = 0;
++        }
++        else if (source_x >= source_width - 1) {
++          source_x = source_width - 1;
++          x_fraction = 0;
++        }
++        top = s->buffers[side] + (size_t)source_y * source_stride
++          + source_x * 3 + channel;
++
++        if (!y_fraction || source_y == source_height - 1) {
++          value = ((unsigned int)top[0] * (horizontal_one - x_fraction)
++                   + (unsigned int)top[source_x < source_width - 1 ? 3 : 0]
++                     * x_fraction) >> 19;
++        }
++        else {
++          const unsigned char *bottom = top + source_stride;
++          int x_fraction_q12 = x_fraction >> 7;
++          unsigned int top_left = top[0];
++          unsigned int top_right = top[source_x < source_width - 1 ? 3 : 0];
++          unsigned int bottom_left = bottom[0];
++          unsigned int bottom_right =
++            bottom[source_x < source_width - 1 ? 3 : 0];
++          value = (bottom_left * (vertical_one - x_fraction_q12)
++                     * y_fraction
++                   + bottom_right * x_fraction_q12 * y_fraction
++                   + top_right * x_fraction_q12
++                     * (vertical_one - y_fraction)
++                   + top_left * (vertical_one - x_fraction_q12)
++                     * (vertical_one - y_fraction)) >> 24;
++        }
++        *destination = (unsigned char)value;
++        destination += 3;
++      }
++    }
++  }
++
++  memcpy(s->buffers[side], corrected, output_bytes);
++  free(corrected);
++  params->lines = output_height;
++  params->bytes_per_line = source_width * 3;
++  update_u_params(s);
++  s->bytes_rx[side] = (int)output_bytes;
++  s->buff_rx[side] = (int)output_bytes;
++  DBG (10, "buffer_sv600_factory_remap: finish %dx%d\n",
++       source_width, output_height);
++  return SANE_STATUS_GOOD;
 +}
 +
-+/* A landscape A4 calibration target exposes an additional two-dimensional
-+ * sweep distortion: projective correction alone leaves vertical and
-+ * horizontal document rules curved.  These coefficients were fitted to both
-+ * line families after the perspective transform.  Apply the inverse mapping
-+ * while sampling the source so the correction does not add a resampling pass.
-+ */
-+static void
-+sv600_landscape_dewarp(double x, double y, int width, int height,
-+                       double *corrected_x, double *corrected_y)
++/* The fixed Flat profiles in ScanSnap Home do not detect a document.  After
++ * optical correction they crop one calibrated A3L plane, then take a
++ * top-aligned, horizontally centred A4L or A5L rectangle from it.  No further
++ * perspective resampling occurs.  Dimensions are exact half-resolution
++ * counterparts of factory 600 dpi output: A3L 9922x7012, A4L 7016x4958 and
++ * A5L 4962x3494. */
++static SANE_Status
++buffer_sv600_fixed_flat(struct fujitsu *s, int side, int page,
++                        int requested_portrait)
 +{
-+  static const double x_coefficients[6] = {
-+    -4.285807075542492, -9.041814251914387,
-+     2.070569259845292, -38.920656894451700,
-+     2.621513440279683,  2.561324063071990
-+  };
-+  static const double y_coefficients[6] = {
-+     4.118655922157716, -3.273545554632843,
-+    -4.678789683801378,  3.609346853079987,
-+     0.975310346498069, -0.122632348767225
-+  };
-+  double normalized_x = 2.0 * x / max(1, width - 1) - 1.0;
-+  double normalized_y = 2.0 * y / max(1, height - 1) - 1.0;
-+  double normalized_x2 = normalized_x * normalized_x;
-+  double normalized_y2 = normalized_y * normalized_y;
-+  double normalized_x3 = normalized_x2 * normalized_x;
-+  double normalized_y3 = normalized_y2 * normalized_y;
-+  double displacement_x =
-+      x_coefficients[0] * normalized_y
-+    + x_coefficients[1] * normalized_x * normalized_y
-+    + x_coefficients[2] * normalized_y2
-+    + x_coefficients[3] * normalized_x * normalized_y2
-+    + x_coefficients[4] * normalized_y3
-+    + x_coefficients[5] * normalized_x * normalized_y3;
-+  double displacement_y =
-+      y_coefficients[0] * normalized_x
-+    + y_coefficients[1] * normalized_x * normalized_y
-+    + y_coefficients[2] * normalized_x2
-+    + y_coefficients[3] * normalized_x2 * normalized_y
-+    + y_coefficients[4] * normalized_x3
-+    + y_coefficients[5] * normalized_x3 * normalized_y;
++  SANE_Parameters *params = &s->s_params;
++  const int canvas_width = 4961;
++  const int canvas_height = 3506;
++  int source_width = params->pixels_per_line;
++  int source_height = params->lines;
++  int source_stride = params->bytes_per_line;
++  int landscape_width;
++  int landscape_height;
++  int canvas_left;
++  int source_left;
++  int source_top;
++  int output_width;
++  int output_height;
++  size_t output_bytes;
++  unsigned char *corrected;
++  int y;
 +
-+  *corrected_x = x + displacement_x * width / 3508.0;
-+  *corrected_y = y + displacement_y * height / 2480.0;
++  if (page == 3) {
++    landscape_width = 4961;
++    landscape_height = 3506;
++  }
++  else if (page == 4) {
++    landscape_width = 3508;
++    landscape_height = 2479;
++  }
++  else if (page == 5) {
++    landscape_width = 2481;
++    landscape_height = 1747;
++  }
++  else
++    return SANE_STATUS_INVAL;
++  canvas_left = (canvas_width - landscape_width) / 2;
++  source_left = (source_width - canvas_width) / 2 + canvas_left;
++  source_top = source_height - canvas_height;
++  output_width = requested_portrait ? landscape_height : landscape_width;
++  output_height = requested_portrait ? landscape_width : landscape_height;
++  output_bytes = (size_t)landscape_width * landscape_height * 3;
++
++  DBG (10, "buffer_sv600_fixed_flat: start page=%d output=%dx%d\n",
++       page, output_width, output_height);
++  if (params->format != SANE_FRAME_RGB || params->depth != 8
++      /* Binary emulation rounds the internal color width down to a multiple
++       * of eight (5096 instead of 5104).  Centre the same factory canvas in
++       * either raw width; output dimensions remain identical. */
++      || source_width < canvas_width
++      || source_height != SV600_FACTORY_A3_ROWS
++      || source_stride < source_width * 3
++      || source_left < 0 || source_top < 0
++      || source_left + landscape_width > source_width
++      || source_top + landscape_height > source_height
++      || output_bytes > (size_t)s->buff_tot[side])
++    return SANE_STATUS_INVAL;
++
++  corrected = malloc(output_bytes);
++  if (!corrected)
++    return SANE_STATUS_NO_MEM;
++
++  for (y = 0; y < landscape_height; y++)
++    memcpy(corrected + (size_t)y * landscape_width * 3,
++           s->buffers[side] + (size_t)(source_top + y) * source_stride
++             + source_left * 3,
++           (size_t)landscape_width * 3);
++
++  if (requested_portrait) {
++    for (y = 0; y < landscape_height; y++) {
++      int x;
++      for (x = 0; x < landscape_width; x++) {
++        const unsigned char *source = corrected
++          + ((size_t)y * landscape_width + x) * 3;
++        unsigned char *destination = s->buffers[side]
++          + ((size_t)(landscape_width - 1 - x) * landscape_height + y) * 3;
++        memcpy(destination, source, 3);
++      }
++    }
++  }
++  else
++    memcpy(s->buffers[side], corrected, output_bytes);
++  free(corrected);
++
++  params->pixels_per_line = output_width;
++  params->bytes_per_line = output_width * 3;
++  params->lines = output_height;
++  update_u_params(s);
++  s->bytes_rx[side] = (int)output_bytes;
++  s->buff_rx[side] = (int)output_bytes;
++  DBG (10, "buffer_sv600_fixed_flat: finish\n");
++  return SANE_STATUS_GOOD;
 +}
 +
-+/* The red and blue SV600 images have opposite vertical scale errors relative
-+ * to green.  They are nearly independent of x, but grow quadratically down
-+ * the scan: about one pixel near the top and fourteen pixels at the bottom of
-+ * a 300 dpi A4 page.  Register the channels before the projective sampling so
-+ * correction costs no additional interpolation pass. */
-+static double
-+sv600_channel_registration_y(int channel, double y, int height)
++/* SANE's packed 1-bit path requires a whole number of pixels per byte.  The
++ * factory fixed-size RGB dimensions are sometimes odd, so remove at most the
++ * seven rightmost pixels before the generic RGB-to-Lineart conversion. */
++static SANE_Status
++buffer_sv600_align_binary_width(struct fujitsu *s, int side)
 +{
-+  static const double coefficients[3][3] = {
-+    {1.10252569215e-6, -3.75043422725e-5, 0.775689500893},
-+    {0, 0, 0},
-+    {-1.09427345984e-6, -1.58936027554e-5, -0.728315456674}
-+  };
-+  double scale = height / 3508.0;
-+  double calibration_y = y / scale;
-+  double displacement = (coefficients[channel][0] * calibration_y
-+    + coefficients[channel][1]) * calibration_y
-+    + coefficients[channel][2];
++  SANE_Parameters *params = &s->s_params;
++  int old_width = params->pixels_per_line;
++  int new_width = old_width - old_width % 8;
++  int old_stride = params->bytes_per_line;
++  int new_stride = new_width * 3;
++  size_t output_bytes;
++  int y;
 +
-+  return y + displacement * scale;
++  if (new_width == old_width)
++    return SANE_STATUS_GOOD;
++  if (params->format != SANE_FRAME_RGB || params->depth != 8
++      || new_width < 8 || old_stride < old_width * 3)
++    return SANE_STATUS_INVAL;
++
++  for (y = 1; y < params->lines; y++)
++    memmove(s->buffers[side] + (size_t)y * new_stride,
++            s->buffers[side] + (size_t)y * old_stride,
++            (size_t)new_stride);
++
++  output_bytes = (size_t)new_stride * params->lines;
++  params->pixels_per_line = new_width;
++  params->bytes_per_line = new_stride;
++  update_u_params(s);
++  s->bytes_rx[side] = (int)output_bytes;
++  s->buff_rx[side] = (int)output_bytes;
++  DBG (10, "buffer_sv600_align_binary_width: %d -> %d\n",
++       old_width, new_width);
++  return SANE_STATUS_GOOD;
 +}
 +
 +/* Render directly from the scanner buffer.  Crop coordinates are expressed
@@ -584,6 +801,8 @@ index 64eb90f..62e6cce 100644
 +  double vertical_span = output_height - 1 - crop_top - crop_bottom;
 +  int y;
 +
++  (void)output_portrait;
++
 +  for (y = 0; y < output_height; y++) {
 +    double target_y = crop_top + y * vertical_span
 +      / max(1, output_height - 1);
@@ -600,18 +819,8 @@ index 64eb90f..62e6cce 100644
 +      int valid = 1;
 +      int channel;
 +
-+      if (!output_portrait)
-+        sv600_landscape_dewarp(target_x, target_y,
-+                               output_width, output_height,
-+                               &rectified_x, &rectified_y);
-+
 +      for (channel = 0; channel < 3; channel++) {
-+        double channel_y = sv600_channel_registration_y(channel,
-+                                                         rectified_y,
-+                                                         output_height);
-+        if (output_portrait)
-+          channel_y = sv600_flat_dewarp_y(target_x, channel_y,
-+                                          output_width, output_height);
++        double channel_y = rectified_y;
 +        {
 +          double denominator = coefficients[6] * rectified_x
 +            + coefficients[7] * channel_y + 1;
@@ -1293,12 +1502,18 @@ index 64eb90f..62e6cce 100644
 +}
 +
 diff --git a/backend/fujitsu.h b/backend/fujitsu.h
-index 6c42ff8..1dab97a 100644
+index 6c42ff81..acd1ae90 100644
 --- a/backend/fujitsu.h
 +++ b/backend/fujitsu.h
-@@ -812,0 +813,2 @@ static SANE_Status mode_select_auto (struct fujitsu *s);
+@@ -812,0 +813,8 @@ static SANE_Status mode_select_auto (struct fujitsu *s);
 +static SANE_Status sv600_prepare_scan (struct fujitsu *s);
++static SANE_Status buffer_sv600_factory_remap(struct fujitsu *s, int side,
++  int output_height);
++static SANE_Status buffer_sv600_fixed_flat(struct fujitsu *s, int side,
++  int page, int requested_portrait);
++static SANE_Status buffer_sv600_align_binary_width(struct fujitsu *s,
++  int side);
 +
-@@ -852,0 +855,2 @@ static SANE_Status buffer_crop(struct fujitsu *s, int side);
+@@ -852,0 +861,2 @@ static SANE_Status buffer_crop(struct fujitsu *s, int side);
 +static SANE_Status buffer_sv600_perspective(struct fujitsu *s, int side,
 +  int requested_portrait);

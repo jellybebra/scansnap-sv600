@@ -20,6 +20,7 @@ fi
 
 for required in \
     patches/0001-fujitsu-sv600-prepare-scan.patch \
+    data/sv600-optical-map-deltas.inc \
     packaging/65-scansnap-sv600.rules \
     packaging/preinst packaging/postinst packaging/postrm
 do
@@ -41,6 +42,8 @@ git clone --filter=blob:none --no-checkout \
 git -C "$source_dir" checkout --detach "$sane_commit"
 git -C "$source_dir" apply --unidiff-zero \
     "$project_root/patches/0001-fujitsu-sv600-prepare-scan.patch"
+install -m 0644 "$project_root/data/sv600-optical-map-deltas.inc" \
+    "$source_dir/backend/sv600-optical-map-deltas.inc"
 git -C "$source_dir" diff --check
 
 (
