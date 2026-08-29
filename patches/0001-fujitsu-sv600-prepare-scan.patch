@@ -1,5 +1,5 @@
 diff --git a/backend/fujitsu.c b/backend/fujitsu.c
-index 64eb90f2..bfe8037e 100644
+index 64eb90f2..53b97862 100644
 --- a/backend/fujitsu.c
 +++ b/backend/fujitsu.c
 @@ -656,0 +657 @@
@@ -214,7 +214,7 @@ index 64eb90f2..bfe8037e 100644
 +      if (is_sv600)
 +        usleep(500000);
 +
-@@ -7245,3 +7366,24 @@ sane_start (SANE_Handle handle)
+@@ -7245,3 +7366,8 @@ sane_start (SANE_Handle handle)
 -    /* finished buffering, adjust image as required */
 -    if(s->swdeskew && (!s->hwdeskewcrop || s->req_driv_crop)){
 -      buffer_deskew(s,s->side);
@@ -226,7 +226,9 @@ index 64eb90f2..bfe8037e 100644
 +        DBG (5, "sane_start: ERROR: SV600 factory remap failed %d\n", ret);
 +        goto errors;
 +      }
-+    }
+@@ -7249,2 +7375,30 @@ sane_start (SANE_Handle handle)
+-    if(s->swcrop && (!s->hwdeskewcrop || s->req_driv_crop)){
+-      buffer_crop(s,s->side);
 +
 +    if (is_sv600 && sv600_fixed_page) {
 +      ret = buffer_sv600_fixed_flat(s, s->side, sv600_fixed_page,
@@ -242,9 +244,7 @@ index 64eb90f2..bfe8037e 100644
 +     * Detect and rectify SV600 pages directly from the untouched full image. */
 +    else if(is_sv600 && s->swdeskew && s->swcrop){
 +      buffer_sv600_perspective(s,s->side,sv600_requested_portrait);
-@@ -7249,2 +7391,14 @@ sane_start (SANE_Handle handle)
--    if(s->swcrop && (!s->hwdeskewcrop || s->req_driv_crop)){
--      buffer_crop(s,s->side);
++    }
 +    else {
 +      if(s->swdeskew && (!s->hwdeskewcrop || s->req_driv_crop)){
 +        buffer_deskew(s,s->side);
@@ -431,7 +431,7 @@ index 64eb90f2..bfe8037e 100644
 +  return SANE_STATUS_GOOD;
 +}
 +
-@@ -10273,0 +10586,1069 @@ buffer_crop(struct fujitsu *s, int side)
+@@ -10273,0 +10586,1168 @@ buffer_crop(struct fujitsu *s, int side)
 +struct sv600_point {
 +  double x;
 +  double y;
@@ -578,8 +578,13 @@ index 64eb90f2..bfe8037e 100644
 +      int source_y = y_fixed >> 12;
 +      int y_fraction = y_fixed & (vertical_one - 1);
 +      int center = source_width / 2;
-+      int x_fixed = (step >> 1) + center * horizontal_one
-+        - (horizontal_one >> 1) - step * center;
++      /* The original kernel uses a uint accumulator.  The last quarter of a
++       * 5104-pixel line exceeds INT_MAX even though it remains well within
++       * UINT32_MAX; a signed accumulator wrapped there and sampled the dark
++       * opposite edge over the physical upper-left corner of a portrait A4. */
++      uint32_t x_fixed = ((uint32_t)step >> 1)
++        + (uint32_t)center * horizontal_one
++        - (horizontal_one >> 1) - (uint32_t)step * center;
 +      unsigned char *destination = corrected
 +        + ((size_t)y * source_width * 3) + channel;
 +      int x;
@@ -649,12 +654,100 @@ index 64eb90f2..bfe8037e 100644
 +  return SANE_STATUS_GOOD;
 +}
 +
-+/* The fixed Flat profiles in ScanSnap Home do not detect a document.  After
-+ * optical correction they crop one calibrated A3L plane, then take a
-+ * top-aligned, horizontally centred A4L or A5L rectangle from it.  No further
-+ * perspective resampling occurs.  Dimensions are exact half-resolution
-+ * counterparts of factory 600 dpi output: A3L 9922x7012, A4L 7016x4958 and
-+ * A5L 4962x3494. */
++/* Locate the first short run of paper-coloured pixels along one line. */
++static int
++sv600_find_page_edge(const unsigned char *image, int width, int height,
++                     int horizontal, int coordinate, int reverse,
++                     int maximum_depth, int threshold, int run_length)
++{
++  int bright = 0;
++  int depth;
++
++  for (depth = 0; depth < maximum_depth; depth++) {
++    int position = reverse ? (horizontal ? width : height) - 1 - depth
++      : depth;
++    int x = horizontal ? position : coordinate;
++    int y = horizontal ? coordinate : position;
++    const unsigned char *pixel = image + ((size_t)y * width + x) * 3;
++
++    if (sv600_luminance(pixel) >= threshold)
++      bright++;
++    else
++      bright = 0;
++    if (bright >= run_length)
++      return depth - run_length + 1;
++  }
++  return -1;
++}
++
++/* Whiten only the area before the first stable paper run on each border-normal
++ * scanline.  Unlike a connected dark-pixel flood fill, this cannot follow a
++ * pencil stroke from the sheet edge into the document.  Pixel dimensions and
++ * content are unchanged. */
++static void
++sv600_whiten_outside_page(unsigned char *image, int width, int height,
++                          int threshold)
++{
++  int maximum_depth = min(width, height) / 12;
++  const int run_length = 8;
++  unsigned long whitened = 0;
++  int pass;
++  int x;
++  int y;
++
++  /* A second pass lets the already-whitened horizontal/vertical strips close
++   * tiny dark corner islands without treating them as document content. */
++  for (pass = 0; pass < 2; pass++) {
++    for (x = 0; x < width; x++) {
++      int reverse;
++      for (reverse = 0; reverse < 2; reverse++) {
++        int depth = sv600_find_page_edge(
++          image, width, height, 0, x, reverse,
++          maximum_depth, threshold, run_length);
++        int offset;
++        if (depth < 0)
++          continue;
++        for (offset = 0; offset < depth; offset++) {
++          int page_y = reverse ? height - 1 - offset : offset;
++          unsigned char *pixel = image
++            + ((size_t)page_y * width + x) * 3;
++          if (pixel[0] != 255 || pixel[1] != 255 || pixel[2] != 255) {
++            pixel[0] = pixel[1] = pixel[2] = 255;
++            whitened++;
++          }
++        }
++      }
++    }
++    for (y = 0; y < height; y++) {
++      int reverse;
++      for (reverse = 0; reverse < 2; reverse++) {
++        int depth = sv600_find_page_edge(
++          image, width, height, 1, y, reverse,
++          maximum_depth, threshold, run_length);
++        int offset;
++        if (depth < 0)
++          continue;
++        for (offset = 0; offset < depth; offset++) {
++          int page_x = reverse ? width - 1 - offset : offset;
++          unsigned char *pixel = image
++            + ((size_t)y * width + page_x) * 3;
++          if (pixel[0] != 255 || pixel[1] != 255 || pixel[2] != 255) {
++            pixel[0] = pixel[1] = pixel[2] = 255;
++            whitened++;
++          }
++        }
++      }
++    }
++  }
++  DBG (15, "sv600_whiten_outside_page: whitened %lu pixels\n", whitened);
++}
++
++/* The fixed Flat profiles in ScanSnap Home use a direct physical crop after
++ * the dense optical remap.  Feature matching of the paired Windows boundary
++ * and final A4 gives boundary x=1179, y=77, width=3508, height=2479.  Linux's
++ * 5104-pixel corrected field is the centred content of that 5816-pixel
++ * boundary, so the same A4 origin is x=823, y=77 (25 pixels to the right of a
++ * centred crop).  No second homography or safety inset is applied. */
 +static SANE_Status
 +buffer_sv600_fixed_flat(struct fujitsu *s, int side, int page,
 +                        int requested_portrait)
@@ -667,7 +760,6 @@ index 64eb90f2..bfe8037e 100644
 +  int source_stride = params->bytes_per_line;
 +  int landscape_width;
 +  int landscape_height;
-+  int canvas_left;
 +  int source_left;
 +  int source_top;
 +  int output_width;
@@ -679,20 +771,23 @@ index 64eb90f2..bfe8037e 100644
 +  if (page == 3) {
 +    landscape_width = 4961;
 +    landscape_height = 3506;
++    source_left = (source_width - canvas_width) / 2;
++    source_top = source_height - canvas_height;
 +  }
 +  else if (page == 4) {
 +    landscape_width = 3508;
 +    landscape_height = 2479;
++    source_left = (source_width - landscape_width) / 2 + 25;
++    source_top = 77;
 +  }
 +  else if (page == 5) {
 +    landscape_width = 2481;
 +    landscape_height = 1747;
++    source_left = (source_width - landscape_width) / 2 + 25;
++    source_top = 77;
 +  }
 +  else
 +    return SANE_STATUS_INVAL;
-+  canvas_left = (canvas_width - landscape_width) / 2;
-+  source_left = (source_width - canvas_width) / 2 + canvas_left;
-+  source_top = source_height - canvas_height;
 +  output_width = requested_portrait ? landscape_height : landscape_width;
 +  output_height = requested_portrait ? landscape_width : landscape_height;
 +  output_bytes = (size_t)landscape_width * landscape_height * 3;
@@ -721,6 +816,10 @@ index 64eb90f2..bfe8037e 100644
 +           s->buffers[side] + (size_t)(source_top + y) * source_stride
 +             + source_left * 3,
 +           (size_t)landscape_width * 3);
++
++  if (page == 4 || page == 5)
++    sv600_whiten_outside_page(corrected, landscape_width,
++                              landscape_height, 120);
 +
 +  if (requested_portrait) {
 +    for (y = 0; y < landscape_height; y++) {
@@ -1502,10 +1601,10 @@ index 64eb90f2..bfe8037e 100644
 +}
 +
 diff --git a/backend/fujitsu.h b/backend/fujitsu.h
-index 6c42ff81..acd1ae90 100644
+index 6c42ff81..318ff5bc 100644
 --- a/backend/fujitsu.h
 +++ b/backend/fujitsu.h
-@@ -812,0 +813,8 @@ static SANE_Status mode_select_auto (struct fujitsu *s);
+@@ -812,0 +813,13 @@ static SANE_Status mode_select_auto (struct fujitsu *s);
 +static SANE_Status sv600_prepare_scan (struct fujitsu *s);
 +static SANE_Status buffer_sv600_factory_remap(struct fujitsu *s, int side,
 +  int output_height);
@@ -1513,7 +1612,12 @@ index 6c42ff81..acd1ae90 100644
 +  int page, int requested_portrait);
 +static SANE_Status buffer_sv600_align_binary_width(struct fujitsu *s,
 +  int side);
++static void sv600_render_perspective(struct fujitsu *s, int side,
++  unsigned char *corrected, int source_width, int source_height,
++  int output_width, int output_height, int output_portrait,
++  const double coefficients[8], int crop_left, int crop_top,
++  int crop_right, int crop_bottom);
 +
-@@ -852,0 +861,2 @@ static SANE_Status buffer_crop(struct fujitsu *s, int side);
+@@ -852,0 +866,2 @@ static SANE_Status buffer_crop(struct fujitsu *s, int side);
 +static SANE_Status buffer_sv600_perspective(struct fujitsu *s, int side,
 +  int requested_portrait);
