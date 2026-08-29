@@ -26,6 +26,7 @@ fi
 
 for required in \
     patches/0001-fujitsu-sv600-prepare-scan.patch \
+    patches/0002-fujitsu-sv600-format-travel.patch \
     data/sv600-optical-map-deltas.inc \
     data/sv600-srgb-lut.inc \
     tools/windows/run_sv600_factory_pipeline.c \
@@ -69,11 +70,16 @@ package_file="$output_dir/scansnap-sv600-sane_${version}_${architecture}.deb"
 git clone --filter=blob:none --no-checkout \
     https://gitlab.com/sane-project/backends.git "$source_dir"
 git -C "$source_dir" checkout --detach "$sane_commit"
-(
-    cd "$source_dir"
-    patch --batch --forward -p1 \
-        < "$project_root/patches/0001-fujitsu-sv600-prepare-scan.patch"
-)
+for patch_file in \
+    0001-fujitsu-sv600-prepare-scan.patch \
+    0002-fujitsu-sv600-format-travel.patch
+do
+    (
+        cd "$source_dir"
+        patch --batch --forward -p1 \
+            < "$project_root/patches/$patch_file"
+    )
+done
 install -m 0644 "$project_root/data/sv600-optical-map-deltas.inc" \
     "$source_dir/backend/sv600-optical-map-deltas.inc"
 install -m 0644 "$project_root/data/sv600-srgb-lut.inc" \

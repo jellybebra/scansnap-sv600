@@ -1,0 +1,184 @@
+diff --git a/backend/fujitsu.c b/backend/fujitsu.c
+index d65b363b..7da4993a 100644
+--- a/backend/fujitsu.c
++++ b/backend/fujitsu.c
+@@ -679,6 +679,9 @@
+ 
+ #define SV600_RAW_WIDTH 5832
+ #define SV600_RAW_HEIGHT 4429
++/* The captured ScanSnap Home minidriver input is 5832x2858 for the SV600's
++ * A4/A5 travel class and 5832x4429 for A3. */
++#define SV600_FIXED_SMALL_RAW_HEIGHT 2858
+ /* The device returns 5572 pixels.  Before optical correction, the Windows
+  * minidriver places those pixels at x=130..5701 in a logical 5832-pixel row,
+  * repeats each edge pixel seven times and leaves 123 black pixels at each
+@@ -2742,7 +2745,7 @@ init_interlace (struct fujitsu *s)
+     IF_DBG( oldDbg=DBG_LEVEL; )
+     IF_DBG( if(DBG_LEVEL < 35){ DBG_LEVEL = 0; } )
+ 
+-    ret = set_window(s);
++    ret = set_window(s, SV600_RAW_HEIGHT);
+ 
+     IF_DBG (DBG_LEVEL = oldDbg;)
+ 
+@@ -7028,6 +7031,7 @@ sane_start (SANE_Handle handle)
+   int sv600_full_frame = 0;
+   int sv600_requested_portrait = 0;
+   int sv600_fixed_page = 0;
++  int sv600_device_height = SV600_RAW_HEIGHT;
+   int sv600_requested_resolution = s->resolution_x;
+   int saved_tl_x = 0;
+   int saved_tl_y = 0;
+@@ -7104,6 +7108,8 @@ sane_start (SANE_Handle handle)
+         else if (fabs(requested_long - 210.0) < 3.0
+                  && fabs(requested_short - 148.0) < 3.0)
+           sv600_fixed_page = 5;
++        if (sv600_fixed_page == 4 || sv600_fixed_page == 5)
++          sv600_device_height = SV600_FIXED_SMALL_RAW_HEIGHT;
+         DBG (15, "sane_start: SV600 requested=%.2fx%.2f orientation=%s fixed=%d\n",
+              requested_width, requested_height,
+              sv600_requested_portrait ? "portrait" : "landscape",
+@@ -7142,8 +7148,13 @@ sane_start (SANE_Handle handle)
+         }
+       }
+ 
+-      /* required for hi res scans on iX500? */
+-      ret = diag_preread(s);
++      /* ScanSnap Home supplies the selected physical paper size to the
++       * SV600 firmware before the remaining scan setup.  This is separate
++       * from SET WINDOW and controls the model's format-specific travel. */
++      if (is_sv600)
++        ret = sv600_diag_preread(s, sv600_fixed_page);
++      else
++        ret = diag_preread(s);
+       if (ret != SANE_STATUS_GOOD)
+         DBG (5, "sane_start: WARNING: cannot diag_preread %d\n", ret);
+ 
+@@ -7204,7 +7215,7 @@ sane_start (SANE_Handle handle)
+       }
+ 
+       /* set window command */
+-      ret = set_window(s);
++      ret = set_window(s, sv600_device_height);
+       if (ret != SANE_STATUS_GOOD) {
+         DBG (5, "sane_start: ERROR: cannot set window\n");
+         goto errors;
+@@ -7407,7 +7418,8 @@ sane_start (SANE_Handle handle)
+       ret = buffer_sv600_factory_remap(
+         s, s->side,
+         sv600_fixed_page == 3
+-          ? SV600_FACTORY_A3_HEIGHT : SV600_FACTORY_AUTO_HEIGHT);
++          ? SV600_FACTORY_A3_HEIGHT : SV600_FACTORY_AUTO_HEIGHT,
++        sv600_device_height);
+       if (ret != SANE_STATUS_GOOD) {
+         DBG (5, "sane_start: ERROR: SV600 factory remap failed %d\n", ret);
+         goto errors;
+@@ -7753,7 +7765,7 @@ setup_buffers (struct fujitsu *s)
+  * values currently in the scanner data structure.
+  */
+ static SANE_Status
+-set_window (struct fujitsu *s)
++set_window (struct fujitsu *s, int sv600_device_height)
+ {
+   SANE_Status ret = SANE_STATUS_GOOD;
+   int is_sv600 = strstr(s->model_name, "SV600") != NULL;
+@@ -7811,7 +7823,7 @@ set_window (struct fujitsu *s)
+ 
+   length = s->s_params.lines * 1200/s->resolution_y;
+   if (is_sv600)
+-    length = SV600_RAW_HEIGHT * 1200 / 300;
++    length = sv600_device_height * 1200 / 300;
+ 
+   /* stupid trick. 3091/2 require reading extra lines,
+    * because they have a gap between R G and B */
+@@ -8240,6 +8252,46 @@ sv600_send_diagnostic (struct fujitsu *s, const char *name,
+   return ret;
+ }
+ 
++static SANE_Status
++sv600_diag_preread (struct fujitsu *s, int fixed_page)
++{
++  /* PfuSsCtl.dll's paper table is expressed in millimetres.  SshCtl.dll
++   * converts those dimensions to the scanner protocol's 1/1200-inch units
++   * and sends diagnostic command 0x117 ("SET PRE READMODE"). */
++  static const struct {
++    int page;
++    unsigned long width;
++    unsigned long length;
++  } formats[] = {
++    { 3, 14031, 19842 }, /* A3: 297 x 420 mm */
++    { 4,  9921, 14031 }, /* A4: 210 x 297 mm */
++    { 5,  6992,  9921 }  /* A5: 148 x 210 mm */
++  };
++  unsigned char payload[SD_preread_len - SD_preread_stringlen];
++  size_t i;
++
++  if (!strstr(s->model_name, "SV600") || !fixed_page)
++    return SANE_STATUS_GOOD;
++
++  for (i = 0; i < sizeof(formats) / sizeof(formats[0]); i++) {
++    if (formats[i].page == fixed_page) {
++      memset(payload, 0, sizeof(payload));
++      putnbyte(payload + 0x00, 300, 2);
++      putnbyte(payload + 0x02, 300, 2);
++      putnbyte(payload + 0x04, formats[i].width, 4);
++      putnbyte(payload + 0x08, formats[i].length, 4);
++      putnbyte(payload + 0x0c, 5, 1);
++      putnbyte(payload + 0x0d, 0, 1);
++      DBG (15, "sv600_diag_preread: page=%d width=%lu length=%lu\n",
++           fixed_page, formats[i].width, formats[i].length);
++      return sv600_send_diagnostic(s, SD_preread_string, payload,
++                                   sizeof(payload));
++    }
++  }
++
++  return SANE_STATUS_INVAL;
++}
++
+ static SANE_Status
+ sv600_send_lut (struct fujitsu *s)
+ {
+@@ -10682,7 +10734,8 @@ sv600_device_sample(const unsigned char *pixels, int stride, int y,
+ /* Reproduce the minidriver's logical-row expansion and exact factory 300 dpi
+  * correction map, then return the boundary produced by AfterExtractImageF. */
+ static SANE_Status
+-buffer_sv600_factory_remap(struct fujitsu *s, int side, int output_height)
++buffer_sv600_factory_remap(struct fujitsu *s, int side, int output_height,
++                           int expected_source_height)
+ {
+   SANE_Parameters *params = &s->s_params;
+   const int vertical_one = 1 << 12;
+@@ -10700,7 +10753,7 @@ buffer_sv600_factory_remap(struct fujitsu *s, int side, int output_height)
+   DBG (10, "buffer_sv600_factory_remap: start\n");
+   if (params->format != SANE_FRAME_RGB || params->depth != 8
+       || device_width != SV600_DEVICE_WIDTH
+-      || source_height != SV600_RAW_HEIGHT
++      || source_height != expected_source_height
+       || source_stride < device_width * 3
+       || (output_height != SV600_FACTORY_A3_HEIGHT
+           && output_height != SV600_FACTORY_AUTO_HEIGHT)
+diff --git a/backend/fujitsu.h b/backend/fujitsu.h
+index 6c0404f8..0da4ebdf 100644
+--- a/backend/fujitsu.h
++++ b/backend/fujitsu.h
+@@ -811,8 +811,9 @@ static SANE_Status mode_select_prepick (struct fujitsu *s);
+ static SANE_Status mode_select_auto (struct fujitsu *s);
+ 
+ static SANE_Status sv600_prepare_scan (struct fujitsu *s);
++static SANE_Status sv600_diag_preread (struct fujitsu *s, int fixed_page);
+ static SANE_Status buffer_sv600_factory_remap(struct fujitsu *s, int side,
+-  int output_height);
++  int output_height, int expected_source_height);
+ static SANE_Status buffer_sv600_vendor_geometry(struct fujitsu *s, int side,
+   int page);
+ static SANE_Status buffer_sv600_vendor_resize(struct fujitsu *s, int side,
+@@ -837,7 +838,7 @@ static int set_max_y (struct fujitsu *s);
+ static SANE_Status send_lut (struct fujitsu *s);
+ static SANE_Status send_endorser (struct fujitsu *s);
+ static SANE_Status endorser (struct fujitsu *s);
+-static SANE_Status set_window (struct fujitsu *s);
++static SANE_Status set_window (struct fujitsu *s, int sv600_device_height);
+ static SANE_Status get_pixelsize(struct fujitsu *s, int actual);
+ 
+ static SANE_Status update_params (struct fujitsu *s);
+
