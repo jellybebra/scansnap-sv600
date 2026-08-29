@@ -1,4 +1,6 @@
 /dist/
 /build/
+/artifacts/
+/vendor/
 __pycache__/
 *.pyc

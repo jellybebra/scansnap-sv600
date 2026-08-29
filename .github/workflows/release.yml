@@ -58,6 +58,21 @@ jobs:
           echo "VERSION=0.2.0+git${GITHUB_RUN_NUMBER}.${short_sha}" >> "$GITHUB_ENV"
           echo "TAG=build-${GITHUB_RUN_NUMBER}-${short_sha}" >> "$GITHUB_ENV"
 
+      - name: Download hash-pinned ScanSnap factory runtime
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p vendor
+          gh release download vendor-windows-4.0.0 \
+            --repo "$GITHUB_REPOSITORY" \
+            --pattern bookbound.dll \
+            --pattern P2IDIGCROP.dll \
+            --pattern P2IATRES.DLL \
+            --pattern I3ipShare.dll \
+            --pattern I3ipCommon.dll \
+            --dir vendor
+
       - name: Build Debian 10 and Astra compatible package
         shell: bash
         run: |
@@ -77,7 +92,7 @@ jobs:
               DEBIAN_FRONTEND=noninteractive apt-get install --yes \
                 autoconf autoconf-archive automake autopoint build-essential \
                 ca-certificates dpkg-dev gettext git libtool \
-                libusb-1.0-0-dev pkg-config python3
+                gcc-mingw-w64-i686 libusb-1.0-0-dev pkg-config python3
               ./packaging/build-deb.sh
             '
 
@@ -91,7 +106,23 @@ jobs:
           trap 'rm -rf "$verify_root"' EXIT
           dpkg-deb --extract "$deb" "$verify_root"
           backend="$verify_root/usr/lib/x86_64-linux-gnu/sane/libsane-sv600-fujitsu.so.1"
+          helper="$verify_root/usr/lib/scansnap-sv600/sv600-factory-pipeline.exe"
+          resize_helper="$verify_root/usr/lib/scansnap-sv600/sv600-factory-resize.exe"
           test -s "$backend"
+          test -s "$helper"
+          test -s "$resize_helper"
+          file "$helper" | grep -F 'PE32 executable'
+          file "$resize_helper" | grep -F 'PE32 executable'
+          test "$(sha256sum "$verify_root/usr/lib/scansnap-sv600/bookbound.dll" | awk '{print $1}')" = \
+            9b1a74712985f8b39c6d8d382bbee9fbca9e21f5d60295ef60dcfb40acae2427
+          test "$(sha256sum "$verify_root/usr/lib/scansnap-sv600/P2IDIGCROP.dll" | awk '{print $1}')" = \
+            5c734ed79b29b2fd5805b96795bb4d15d8d8874f71ed9aad6d6e6094db6369c2
+          test "$(sha256sum "$verify_root/usr/lib/scansnap-sv600/P2IATRES.DLL" | awk '{print $1}')" = \
+            de7787c285a8b0d5f33dd1d98d895f371d1a98f77b151fb50a0f061ecb03c15b
+          test "$(sha256sum "$verify_root/usr/lib/scansnap-sv600/i3ipCore/I3ipShare.dll" | awk '{print $1}')" = \
+            fcf411aa7abe756a78133ea9f21c2aef122b4e3a1b9fdca9411162d4e1158c0b
+          test "$(sha256sum "$verify_root/usr/lib/scansnap-sv600/i3ipCore/I3ipCommon.dll" | awk '{print $1}')" = \
+            560277036290cd406917623cb3ae593ef773624667999377828050e86d6309fc
           readelf -d "$backend"
           max_glibc="$(
             objdump -T "$backend" 2>/dev/null |

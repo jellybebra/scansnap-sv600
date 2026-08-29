@@ -1,17 +1,62 @@
 diff --git a/backend/fujitsu.c b/backend/fujitsu.c
-index 64eb90f2..e4a50d9d 100644
+index 64eb90f22b66f4a49991ab09a76b4fb86fec49e2..d65b363bc53367fc34fd4a520e8802d375e81c43 100644
 --- a/backend/fujitsu.c
 +++ b/backend/fujitsu.c
-@@ -656,0 +657 @@
+@@ -653,7 +653,16 @@
+ 
+ #include <string.h> /*memcpy...*/
+ #include <ctype.h> /*isspace*/
++#include <errno.h>
++#include <fcntl.h>
++#include <limits.h>
+ #include <math.h> /*tan*/
 +#include <stdint.h>
-@@ -667,0 +669,4 @@
++#include <stdio.h>
++#include <stdlib.h>
++#include <sys/stat.h>
++#include <sys/types.h>
++#include <sys/wait.h>
+ #include <unistd.h> /*usleep*/
+ 
+ #include "../include/sane/sanei_backend.h"
+@@ -665,6 +674,25 @@
+ 
+ #include "fujitsu-scsi.h"
+ #include "fujitsu.h"
 +#include "sv600-optical-map-deltas.inc"
++#include "sv600-srgb-lut.inc"
 +
-+#define SV600_FACTORY_AUTO_ROWS 2781
-+#define SV600_FACTORY_A3_ROWS 3542
-@@ -741,0 +747 @@
++#define SV600_RAW_WIDTH 5832
++#define SV600_RAW_HEIGHT 4429
++/* The device returns 5572 pixels.  Before optical correction, the Windows
++ * minidriver places those pixels at x=130..5701 in a logical 5832-pixel row,
++ * repeats each edge pixel seven times and leaves 123 black pixels at each
++ * outside edge.  This layout was verified without differences across all
++ * captured correction input blocks. */
++#define SV600_DEVICE_WIDTH 5572
++#define SV600_DEVICE_LEFT 130
++#define SV600_ACTIVE_LEFT 123
++#define SV600_ACTIVE_RIGHT 5708
++#define SV600_FACTORY_LEFT 8
++#define SV600_FACTORY_TOP 52
++#define SV600_FACTORY_WIDTH 5816
++#define SV600_FACTORY_AUTO_HEIGHT 2781
++#define SV600_FACTORY_A3_HEIGHT 4352
+ 
+ #define DEBUG 1
+ #define BUILD 140
+@@ -739,6 +767,7 @@
+ #define STRING_BACK SANE_I18N("Back")
+ 
+ #define max(a,b) (((a)>(b))?(a):(b))
 +#define min(a,b) (((a)<(b))?(a):(b))
-@@ -2174,0 +2181,26 @@ init_model (struct fujitsu *s)
+ 
+ /* Also set via config file. */
+ static int global_buffer_size = 64 * 1024;
+@@ -2172,9 +2201,51 @@ init_model (struct fujitsu *s)
+   s->has_MS_lamp = 1;
+   s->has_MS_jobsep = 1;
+ 
 +  /* The SV600 rejects the generic SET WINDOW probes used to discover color
 +   * interlacing.  Its firmware accepts dot-interleaved RGB, so declare that
 +   * format up front and let init_interlace() return immediately.
@@ -36,40 +81,67 @@ index 64eb90f2..e4a50d9d 100644
 +     * Mark it as emulated so GUI frontends can request standard 8-bit Gray. */
 +    s->can_mode[MODE_GRAYSCALE] = 2;
 +    s->can_mode[MODE_LINEART] = 2;
++
++    /* ScanSnap Home always acquires the optical frame at 300 dpi and uses
++     * P2IATRES for its four public quality levels. */
++    s->min_x_res = s->min_y_res = 150;
++    s->max_x_res = s->max_y_res = 600;
++    s->basic_x_res = s->basic_y_res = 300;
++    for (i = 0; i < 6; i++) {
++      s->step_x_res[i] = 0;
++      s->step_y_res[i] = 0;
++    }
++    for (i = 0; i < 16; i++)
++      s->std_res[i] = 0;
++    s->std_res[4] = 1;  /* 150 dpi */
++    s->std_res[7] = 1;  /* 200 dpi */
++    s->std_res[9] = 1;  /* 300 dpi */
++    s->std_res[13] = 1; /* 600 dpi */
 +  }
 +
-@@ -2177 +2209 @@ init_model (struct fujitsu *s)
+   /* these two scanners lie about their capabilities,
+    * and/or differ significantly from most other models */
 -  if (strstr (s->model_name, "M3091")
 +  else if (strstr (s->model_name, "M3091")
-@@ -2591,0 +2624,8 @@ init_user (struct fujitsu *s)
-+  /* ScanSnap Home straightens and crops the SV600's projected camera image
-+   * in software.  Enable the equivalent buffered SANE path by default so
-+   * ordinary frontends receive a document instead of the raw A3 scene. */
-+  if (strstr (s->model_name, "SV600")) {
-+    s->swdeskew = 1;
-+    s->swcrop = 1;
-+  }
-+
-@@ -6732 +6772,4 @@ mode_select_auto (struct fujitsu *s)
+    || strstr (s->model_name, "M3092")) {
+ 
+     /* lies */
+@@ -6729,7 +6800,10 @@ mode_select_auto (struct fujitsu *s)
+   set_MSEL_pc(page, MS_pc_auto);
+   set_MSEL_page_len(page, MSEL_data_min_len-2);
+ 
 -  set_MSEL_overscan(page, s->overscan);
 +  if (strstr(s->model_name, "SV600"))
 +    set_MSEL_overscan(page, MSEL_ON);
 +  else
 +    set_MSEL_overscan(page, s->overscan);
-@@ -6952,0 +6996,8 @@ sane_start (SANE_Handle handle)
+   set_MSEL_ald(page, s->ald || s->hwdeskewcrop);
+   set_MSEL_awd(page, s->awd || s->hwdeskewcrop);
+   set_MSEL_req_driv_crop(page, s->hwdeskewcrop && (s->swcrop || s->swdeskew));
+@@ -6950,6 +7024,15 @@ sane_start (SANE_Handle handle)
+ {
+   struct fujitsu *s = handle;
+   SANE_Status ret = SANE_STATUS_GOOD;
 +  int is_sv600 = strstr(s->model_name, "SV600") != NULL;
 +  int sv600_full_frame = 0;
 +  int sv600_requested_portrait = 0;
 +  int sv600_fixed_page = 0;
++  int sv600_requested_resolution = s->resolution_x;
 +  int saved_tl_x = 0;
 +  int saved_tl_y = 0;
 +  int saved_br_x = 0;
 +  int saved_br_y = 0;
-@@ -6987,0 +7039,47 @@ sane_start (SANE_Handle handle)
+ 
+   DBG (10, "sane_start: start\n");
+   DBG (15, "started=%d, side=%d, source=%d\n", s->started, s->side, s->source);
+@@ -6985,6 +7068,53 @@ sane_start (SANE_Handle handle)
+         s->side = SIDE_FRONT;
+       }
+ 
 +      /* Frontends such as Simple Scan express A4 as a portrait scan window.
-+       * That window clips a physically landscape page before software can
-+       * discover its orientation.  Acquire the whole SV600 mat internally;
-+       * the perspective pass below returns only the detected document. */
++       * That window would clip a physically landscape page before the
++       * factory geometry stage.  Acquire the whole SV600 mat internally,
++       * then select the matching A3L/A4L/A5L or automatic vendor path. */
 +      if (is_sv600) {
 +        double requested_width;
 +        double requested_height;
@@ -113,7 +185,13 @@ index 64eb90f2..e4a50d9d 100644
 +        sv600_full_frame = 1;
 +      }
 +
-@@ -7019,0 +7118,10 @@ sane_start (SANE_Handle handle)
+       /* load our own private copy of scan params */
+       ret = update_params(s);
+       if (ret != SANE_STATUS_GOOD) {
+@@ -7017,40 +7147,61 @@ sane_start (SANE_Handle handle)
+       if (ret != SANE_STATUS_GOOD)
+         DBG (5, "sane_start: WARNING: cannot diag_preread %d\n", ret);
+ 
 +      /* The SV600 performs this preparation before MODE SELECT, SET WINDOW,
 +       * and SCAN in the original driver. */
 +      if (is_sv600) {
@@ -124,7 +202,11 @@ index 64eb90f2..e4a50d9d 100644
 +        }
 +      }
 +
-@@ -7025,4 +7133,14 @@ sane_start (SANE_Handle handle)
+       /* enable overscan/auto detection */
+       ret = mode_select_auto(s);
+       if (ret != SANE_STATUS_GOOD)
+         DBG (5, "sane_start: WARNING: cannot mode_select_auto %d\n", ret);
+ 
 -      /* enable double feed detection */
 -      ret = mode_select_df(s);
 -      if (ret != SANE_STATUS_GOOD)
@@ -143,7 +225,7 @@ index 64eb90f2..e4a50d9d 100644
 +        ret = mode_select_df(s);
 +        if (ret != SANE_STATUS_GOOD)
 +          DBG (5, "sane_start: WARNING: cannot mode_select_df %d\n", ret);
-@@ -7030,4 +7148,4 @@ sane_start (SANE_Handle handle)
+ 
 -      /* enable background color setting */
 -      ret = mode_select_bg(s);
 -      if (ret != SANE_STATUS_GOOD)
@@ -152,7 +234,7 @@ index 64eb90f2..e4a50d9d 100644
 +        ret = mode_select_bg(s);
 +        if (ret != SANE_STATUS_GOOD)
 +          DBG (5, "sane_start: WARNING: cannot mode_select_bg %d\n", ret);
-@@ -7035,4 +7153,4 @@ sane_start (SANE_Handle handle)
+ 
 -      /* enable dropout color setting */
 -      ret = mode_select_dropout(s);
 -      if (ret != SANE_STATUS_GOOD)
@@ -161,7 +243,7 @@ index 64eb90f2..e4a50d9d 100644
 +        ret = mode_select_dropout(s);
 +        if (ret != SANE_STATUS_GOOD)
 +          DBG (5, "sane_start: WARNING: cannot mode_select_dropout %d\n", ret);
-@@ -7040,4 +7158,4 @@ sane_start (SANE_Handle handle)
+ 
 -      /* enable buffering setting */
 -      ret = mode_select_buff(s);
 -      if (ret != SANE_STATUS_GOOD)
@@ -170,7 +252,7 @@ index 64eb90f2..e4a50d9d 100644
 +        ret = mode_select_buff(s);
 +        if (ret != SANE_STATUS_GOOD)
 +          DBG (5, "sane_start: WARNING: cannot mode_select_buff %d\n", ret);
-@@ -7045,4 +7163,4 @@ sane_start (SANE_Handle handle)
+ 
 -      /* enable prepick setting */
 -      ret = mode_select_prepick(s);
 -      if (ret != SANE_STATUS_GOOD)
@@ -179,7 +261,7 @@ index 64eb90f2..e4a50d9d 100644
 +        ret = mode_select_prepick(s);
 +        if (ret != SANE_STATUS_GOOD)
 +          DBG (5, "sane_start: WARNING: cannot mode_select_prepick %d\n", ret);
-@@ -7050,4 +7168,5 @@ sane_start (SANE_Handle handle)
+ 
 -      /* send endorser config */
 -      ret = send_endorser(s);
 -      if (ret != SANE_STATUS_GOOD)
@@ -189,13 +271,29 @@ index 64eb90f2..e4a50d9d 100644
 +        if (ret != SANE_STATUS_GOOD)
 +          DBG (5, "sane_start: WARNING: cannot send_endorser %d\n", ret);
 +      }
-@@ -7063 +7182 @@ sane_start (SANE_Handle handle)
+ 
+       /* set window command */
+       ret = set_window(s);
+@@ -7060,30 +7211,34 @@ sane_start (SANE_Handle handle)
+       }
+ 
+       /* send lut if set_window said we would */
 -      if ( s->window_gamma ){
 +      if (s->window_gamma && !is_sv600){
-@@ -7070 +7189 @@ sane_start (SANE_Handle handle)
+         ret = send_lut(s);
+         if (ret != SANE_STATUS_GOOD)
+           DBG (5, "sane_start: WARNING: cannot send_lut %d\n", ret);
+       }
+ 
+       /* some scanners need the q table sent, even when not scanning jpeg */
 -      if (s->need_q_table){
 +      if (s->need_q_table && !is_sv600){
-@@ -7077,4 +7196,6 @@ sane_start (SANE_Handle handle)
+         ret = send_q_table(s);
+         if (ret != SANE_STATUS_GOOD)
+           DBG (5, "sane_start: WARNING: cannot send_q_table %d\n", ret);
+       }
+ 
+       /* start/stop endorser */
 -      ret = endorser(s);
 -      if (ret != SANE_STATUS_GOOD) {
 -        DBG (5, "sane_start: ERROR: cannot start/stop endorser\n");
@@ -206,7 +304,9 @@ index 64eb90f2..e4a50d9d 100644
 +          DBG (5, "sane_start: ERROR: cannot start/stop endorser\n");
 +          goto errors;
 +        }
-@@ -7084,3 +7205,5 @@ sane_start (SANE_Handle handle)
+       }
+ 
+       /* turn lamp on */
 -      ret = scanner_control(s, SC_function_lamp_on);
 -      if (ret != SANE_STATUS_GOOD) {
 -        DBG (5, "sane_start: WARNING: cannot start lamp, ignoring\n");
@@ -215,59 +315,55 @@ index 64eb90f2..e4a50d9d 100644
 +        if (ret != SANE_STATUS_GOOD) {
 +          DBG (5, "sane_start: WARNING: cannot start lamp, ignoring\n");
 +        }
-@@ -7143,0 +7267,6 @@ sane_start (SANE_Handle handle)
+       }
+ 
+       /* iX500 errors if op is called with no paper
+@@ -7141,6 +7296,12 @@ sane_start (SANE_Handle handle)
+         goto errors;
+       }
+ 
 +      /* The Windows driver enforces a model-specific class-1 settling time
 +       * after SET WINDOW and before SCAN.  A conservative half-second delay
 +       * avoids racing the SV600 illumination mechanics. */
 +      if (is_sv600)
 +        usleep(500000);
 +
-@@ -7245,3 +7374,8 @@ sane_start (SANE_Handle handle)
+       ret = start_scan (s);
+       if (ret != SANE_STATUS_GOOD) {
+         DBG (5, "sane_start: ERROR: cannot start_scan\n");
+@@ -7242,12 +7403,67 @@ sane_start (SANE_Handle handle)
+       goto errors;
+     }
+ 
 -    /* finished buffering, adjust image as required */
 -    if(s->swdeskew && (!s->hwdeskewcrop || s->req_driv_crop)){
 -      buffer_deskew(s,s->side);
 +    if (is_sv600) {
 +      ret = buffer_sv600_factory_remap(
 +        s, s->side,
-+        sv600_fixed_page ? SV600_FACTORY_A3_ROWS : SV600_FACTORY_AUTO_ROWS);
++        sv600_fixed_page == 3
++          ? SV600_FACTORY_A3_HEIGHT : SV600_FACTORY_AUTO_HEIGHT);
 +      if (ret != SANE_STATUS_GOOD) {
 +        DBG (5, "sane_start: ERROR: SV600 factory remap failed %d\n", ret);
 +        goto errors;
 +      }
-@@ -7249,2 +7383,45 @@ sane_start (SANE_Handle handle)
++      ret = buffer_sv600_vendor_geometry(s, s->side, sv600_fixed_page);
++      if (ret != SANE_STATUS_GOOD) {
++        DBG (5, "sane_start: ERROR: SV600 vendor geometry failed %d\n", ret);
++        goto errors;
++      }
++      if (sv600_requested_portrait && sv600_fixed_page != 3
++          && s->s_params.pixels_per_line > s->s_params.lines) {
++        ret = buffer_sv600_rotate_portrait(s, s->side);
++        if (ret != SANE_STATUS_GOOD) {
++          DBG (5, "sane_start: ERROR: SV600 portrait rotation failed %d\n",
++               ret);
++          goto errors;
++        }
++      }
+     }
 -    if(s->swcrop && (!s->hwdeskewcrop || s->req_driv_crop)){
 -      buffer_crop(s,s->side);
-+
-+    if (is_sv600 && sv600_fixed_page == 3) {
-+      ret = buffer_sv600_fixed_flat(s, s->side, sv600_fixed_page,
-+                                    sv600_requested_portrait);
-+      if (ret != SANE_STATUS_GOOD) {
-+        DBG (5, "sane_start: ERROR: SV600 fixed flat render failed %d\n", ret);
-+        goto errors;
-+      }
-+    }
-+
-+    /* ScanSnap Home treats fixed A4L/A5L as a requested output format, not
-+     * as immutable camera coordinates: it still locates the four physical
-+     * corners and rectifies the page.  Force only the output dimensions. */
-+    else if (is_sv600 && (sv600_fixed_page == 4
-+                          || sv600_fixed_page == 5)) {
-+      ret = buffer_sv600_perspective(s, s->side,
-+                                     sv600_requested_portrait,
-+                                     sv600_fixed_page);
-+      if (ret != SANE_STATUS_GOOD) {
-+        DBG (5, "sane_start: ERROR: SV600 fixed page detection failed %d\n",
-+             ret);
-+        goto errors;
-+      }
-+    }
-+
-+    /* The generic SANE deskew rotates a landscape SV600 projection before
-+     * the document corners are known and can clip it against the frame.
-+     * Detect and rectify SV600 pages directly from the untouched full image. */
-+    else if(is_sv600 && s->swdeskew && s->swcrop){
-+      buffer_sv600_perspective(s,s->side,sv600_requested_portrait,0);
-+    }
 +    else {
 +      if(s->swdeskew && (!s->hwdeskewcrop || s->req_driv_crop)){
 +        buffer_deskew(s,s->side);
@@ -276,20 +372,54 @@ index 64eb90f2..e4a50d9d 100644
 +        buffer_crop(s,s->side);
 +      }
 +    }
++    if (is_sv600) {
++      ret = buffer_sv600_factory_gamma(s, s->side);
++      if (ret != SANE_STATUS_GOOD) {
++        DBG (5, "sane_start: ERROR: SV600 factory gamma failed %d\n",
++             ret);
++        goto errors;
++      }
++      if (sv600_requested_resolution != 300) {
++        ret = buffer_sv600_vendor_resize(
++          s, s->side, sv600_requested_resolution);
++        if (ret != SANE_STATUS_GOOD) {
++          DBG (5, "sane_start: ERROR: SV600 vendor resize failed %d\n",
++               ret);
++          goto errors;
++        }
++      }
++      ret = buffer_sv600_factory_finish(s, s->side);
++      if (ret != SANE_STATUS_GOOD) {
++        DBG (5, "sane_start: ERROR: SV600 factory finishing failed %d\n",
++             ret);
++        goto errors;
++      }
++    }
 +    if (is_sv600 && s->u_mode == MODE_LINEART) {
 +      ret = buffer_sv600_align_binary_width(s, s->side);
 +      if (ret != SANE_STATUS_GOOD) {
 +        DBG (5, "sane_start: ERROR: SV600 binary alignment failed %d\n", ret);
 +        goto errors;
 +      }
-@@ -7262,0 +7440,6 @@ sane_start (SANE_Handle handle)
+     }
+     if(s->swdespeck){
+       buffer_despeck(s,s->side);
+@@ -7260,12 +7476,25 @@ sane_start (SANE_Handle handle)
+       if(buffer_isblank(s,s->side)){
+         s->bytes_tx[s->side] = s->bytes_rx[s->side];
+         s->eof_tx[s->side] = 1;
 +        if (sv600_full_frame) {
 +          s->tl_x = saved_tl_x;
 +          s->tl_y = saved_tl_y;
 +          s->br_x = saved_br_x;
 +          s->br_y = saved_br_y;
 +        }
-@@ -7268,0 +7452,7 @@ sane_start (SANE_Handle handle)
+         return sane_start(handle);
+       }
+     }
+ 
+   }
+ 
 +  if (sv600_full_frame) {
 +    s->tl_x = saved_tl_x;
 +    s->tl_y = saved_tl_y;
@@ -297,7 +427,13 @@ index 64eb90f2..e4a50d9d 100644
 +    s->br_y = saved_br_y;
 +  }
 +
-@@ -7280,0 +7471,7 @@ sane_start (SANE_Handle handle)
+   /* check if user cancelled during this start */
+   ret = check_for_cancel(s);
+ 
+@@ -7278,6 +7507,13 @@ sane_start (SANE_Handle handle)
+   errors:
+     DBG (10, "sane_start: error %d\n", ret);
+ 
 +    if (sv600_full_frame) {
 +      s->tl_x = saved_tl_x;
 +      s->tl_y = saved_tl_y;
@@ -305,15 +441,56 @@ index 64eb90f2..e4a50d9d 100644
 +      s->br_y = saved_br_y;
 +    }
 +
-@@ -7522,0 +7720 @@ set_window (struct fujitsu *s)
+     /* if we are started, but something went wrong,
+      * chances are there is image data inside scanner,
+      * which should be discarded via cancel command */
+@@ -7520,6 +7756,7 @@ static SANE_Status
+ set_window (struct fujitsu *s)
+ {
+   SANE_Status ret = SANE_STATUS_GOOD;
 +  int is_sv600 = strstr(s->model_name, "SV600") != NULL;
-@@ -7539,0 +7738 @@ set_window (struct fujitsu *s)
+ 
+   /* The command specifies the number of bytes in the data phase
+    * the data phase has a header, followed by 1 or 2 window desc blocks
+@@ -7537,6 +7774,7 @@ set_window (struct fujitsu *s)
+   unsigned char * desc1 = out + SW_header_len;               /*1st desc*/
+   unsigned char * desc2 = out + SW_header_len + SW_desc_len; /*2nd desc*/
+ 
 +  int width = 0;
-@@ -7569 +7768,2 @@ set_window (struct fujitsu *s)
+   int length = 0;
+ 
+   DBG (10, "set_window: start\n");
+@@ -7555,8 +7793,8 @@ set_window (struct fujitsu *s)
+     set_WD_wid (desc1, WD_wid_front);
+   }
+ 
+-  set_WD_Xres (desc1, s->resolution_x);
+-  set_WD_Yres (desc1, s->resolution_y);
++  set_WD_Xres (desc1, is_sv600 ? 300 : s->resolution_x);
++  set_WD_Yres (desc1, is_sv600 ? 300 : s->resolution_y);
+ 
+   set_WD_ULX (desc1, s->tl_x);
+   /* low-end scanners ignore paper-size,
+@@ -7566,9 +7804,14 @@ set_window (struct fujitsu *s)
+   }
+ 
+   set_WD_ULY (desc1, s->tl_y);
 -  set_WD_width (desc1, s->s_params.pixels_per_line * 1200/s->resolution_x);
 +  width = s->s_params.pixels_per_line * 1200/s->resolution_x;
++  if (is_sv600)
++    width = SV600_DEVICE_WIDTH * 1200 / 300;
 +  set_WD_width (desc1, width);
-@@ -7742,2 +7942,17 @@ set_window (struct fujitsu *s)
+ 
+   length = s->s_params.lines * 1200/s->resolution_y;
++  if (is_sv600)
++    length = SV600_RAW_HEIGHT * 1200 / 300;
+ 
+   /* stupid trick. 3091/2 require reading extra lines,
+    * because they have a gap between R G and B */
+@@ -7739,8 +7982,23 @@ set_window (struct fujitsu *s)
+     return SANE_STATUS_INVAL;
+   }
+ 
 -  /* common to all vuids */
 -  if(s->source == SOURCE_FLATBED){
 +  /* The SV600 Windows minidriver's SendSWDData() emits a Comet-specific
@@ -333,7 +510,13 @@ index 64eb90f2..e4a50d9d 100644
 +
 +  /* common to all other vuids */
 +  else if(s->source == SOURCE_FLATBED){
-@@ -7948,0 +8164,120 @@ object_position (struct fujitsu *s, int action)
+     set_WD_paper_selection(desc1,WD_paper_SEL_UNDEFINED);
+   }
+   else{
+@@ -7946,6 +8204,126 @@ object_position (struct fujitsu *s, int action)
+  * (This doesn't actually read anything, it just tells the scanner
+  * to start scanning.)
+  */
 +static SANE_Status
 +sv600_send_diagnostic (struct fujitsu *s, const char *name,
 +                       const unsigned char *payload, size_t payload_len)
@@ -454,162 +637,135 @@ index 64eb90f2..e4a50d9d 100644
 +  return SANE_STATUS_GOOD;
 +}
 +
-@@ -10273,0 +10609,1083 @@ buffer_crop(struct fujitsu *s, int side)
-+struct sv600_point {
-+  double x;
-+  double y;
-+};
+ static SANE_Status
+ start_scan (struct fujitsu *s)
+ {
+@@ -9061,9 +9439,18 @@ downsample_from_buffer(struct fujitsu *s, SANE_Byte * buf,
+             gray = *(s->buffers[side]+s->buff_tx[side]+2) * 3;
+             break;
+           default:
+-            gray = *(s->buffers[side]+s->buff_tx[side])
+-              + *(s->buffers[side]+s->buff_tx[side]+1)
+-              + *(s->buffers[side]+s->buff_tx[side]+2);
++            if (strstr(s->model_name, "SV600")) {
++              /* SsSvcConvRGBToGrayN in the factory worker uses this exact
++               * integer BT.601 form after the color pipeline and resize. */
++              gray = (77 * *(s->buffers[side]+s->buff_tx[side])
++                      + 150 * *(s->buffers[side]+s->buff_tx[side]+1)
++                      + 29 * *(s->buffers[side]+s->buff_tx[side]+2)) >> 8;
++            }
++            else {
++              gray = (*(s->buffers[side]+s->buff_tx[side])
++                      + *(s->buffers[side]+s->buff_tx[side]+1)
++                      + *(s->buffers[side]+s->buff_tx[side]+2)) / 3;
++            }
+             break;
+         }
+ 
+@@ -9072,7 +9459,8 @@ downsample_from_buffer(struct fujitsu *s, SANE_Byte * buf,
+         s->bytes_tx[side] += 3;
+ 
+         /* add byte to output */
+-        *(buf + *len) = gray/3;
++        *(buf + *len) = strstr(s->model_name, "SV600")
++          && s->dropout_color == COLOR_DEFAULT ? gray : gray/3;
+         (*len)++;
+       }
+     }
+@@ -9925,6 +10313,9 @@ wait_scanner(struct fujitsu *s)
+ static int
+ must_fully_buffer(struct fujitsu *s)
+ {
++  if (strstr(s->model_name, "SV600"))
++    return 1;
 +
-+static int
-+sv600_luminance(const unsigned char *pixel)
+   if(s->hwdeskewcrop){
+     return 1;
+   }
+@@ -10271,6 +10662,689 @@ buffer_crop(struct fujitsu *s, int side)
+   return ret;
+ }
+ 
++static unsigned char
++sv600_device_sample(const unsigned char *pixels, int stride, int y,
++                    int logical_x, int channel)
 +{
-+  return (77 * pixel[0] + 150 * pixel[1] + 29 * pixel[2]) >> 8;
++  int device_x;
++
++  if (logical_x < SV600_ACTIVE_LEFT || logical_x > SV600_ACTIVE_RIGHT)
++    return 0;
++  if (logical_x <= SV600_DEVICE_LEFT)
++    device_x = 0;
++  else if (logical_x >= SV600_DEVICE_LEFT + SV600_DEVICE_WIDTH - 1)
++    device_x = SV600_DEVICE_WIDTH - 1;
++  else
++    device_x = logical_x - SV600_DEVICE_LEFT;
++  return pixels[(size_t)y * stride + device_x * 3 + channel];
 +}
 +
-+static int
-+sv600_solve_perspective(const struct sv600_point source[4],
-+                        int width, int height, double result[8])
-+{
-+  double matrix[8][9];
-+  struct sv600_point destination[4];
-+  int point;
-+  int column;
-+  int row;
-+
-+  destination[0].x = 0;
-+  destination[0].y = 0;
-+  destination[1].x = width - 1;
-+  destination[1].y = 0;
-+  destination[2].x = width - 1;
-+  destination[2].y = height - 1;
-+  destination[3].x = 0;
-+  destination[3].y = height - 1;
-+  memset(matrix, 0, sizeof(matrix));
-+
-+  for (point = 0; point < 4; point++) {
-+    double x = destination[point].x;
-+    double y = destination[point].y;
-+    double source_x = source[point].x;
-+    double source_y = source[point].y;
-+    int first = point * 2;
-+    int second = first + 1;
-+
-+    matrix[first][0] = x;
-+    matrix[first][1] = y;
-+    matrix[first][2] = 1;
-+    matrix[first][6] = -source_x * x;
-+    matrix[first][7] = -source_x * y;
-+    matrix[first][8] = source_x;
-+
-+    matrix[second][3] = x;
-+    matrix[second][4] = y;
-+    matrix[second][5] = 1;
-+    matrix[second][6] = -source_y * x;
-+    matrix[second][7] = -source_y * y;
-+    matrix[second][8] = source_y;
-+  }
-+
-+  for (column = 0; column < 8; column++) {
-+    int pivot = column;
-+    double divisor;
-+
-+    for (row = column + 1; row < 8; row++) {
-+      if (fabs(matrix[row][column]) > fabs(matrix[pivot][column]))
-+        pivot = row;
-+    }
-+    if (fabs(matrix[pivot][column]) < 1e-12)
-+      return 0;
-+
-+    if (pivot != column) {
-+      for (row = column; row < 9; row++) {
-+        double temporary = matrix[column][row];
-+        matrix[column][row] = matrix[pivot][row];
-+        matrix[pivot][row] = temporary;
-+      }
-+    }
-+
-+    divisor = matrix[column][column];
-+    for (row = column; row < 9; row++)
-+      matrix[column][row] /= divisor;
-+
-+    for (row = 0; row < 8; row++) {
-+      double factor;
-+      int item;
-+      if (row == column)
-+        continue;
-+      factor = matrix[row][column];
-+      for (item = column; item < 9; item++)
-+        matrix[row][item] -= factor * matrix[column][item];
-+    }
-+  }
-+
-+  for (row = 0; row < 8; row++)
-+    result[row] = matrix[row][8];
-+  return 1;
-+}
-+
-+/* Apply the exact factory 300 dpi correction map used by SV600u-x64.dll.
-+ * The original manual kernel stores vertical coordinates in Q12 and the
-+ * centre-based horizontal sampling step in Q19.  Each channel is remapped
-+ * independently with bilinear interpolation.  Automatic detection uses the
-+ * observed 2781-line A4 boundary; fixed flat formats keep the full A3 field. */
++/* Reproduce the minidriver's logical-row expansion and exact factory 300 dpi
++ * correction map, then return the boundary produced by AfterExtractImageF. */
 +static SANE_Status
 +buffer_sv600_factory_remap(struct fujitsu *s, int side, int output_height)
 +{
 +  SANE_Parameters *params = &s->s_params;
 +  const int vertical_one = 1 << 12;
 +  const int horizontal_one = 1 << 19;
++  const int device_width = params->pixels_per_line;
++  const int source_width = SV600_RAW_WIDTH;
++  const int source_height = params->lines;
++  const int source_stride = params->bytes_per_line;
++  const size_t output_bytes =
++    (size_t)SV600_FACTORY_WIDTH * output_height * 3;
 +  int current[5];
-+  int source_width = params->pixels_per_line;
-+  int source_height = params->lines;
-+  int source_stride = params->bytes_per_line;
-+  size_t output_bytes = (size_t)source_width * output_height * 3;
 +  unsigned char *corrected;
-+  int y;
++  int map_y;
 +
 +  DBG (10, "buffer_sv600_factory_remap: start\n");
 +  if (params->format != SANE_FRAME_RGB || params->depth != 8
-+      || source_stride < source_width * 3
-+      || output_height < 1 || output_height > SV600_FACTORY_MAP_ROWS
-+      || source_height < output_height
-+      || output_bytes > (size_t)s->buff_tot[side]) {
-+    DBG (5, "buffer_sv600_factory_remap: unsupported source %dx%d/%d\n",
-+         source_width, source_height, source_stride);
++      || device_width != SV600_DEVICE_WIDTH
++      || source_height != SV600_RAW_HEIGHT
++      || source_stride < device_width * 3
++      || (output_height != SV600_FACTORY_A3_HEIGHT
++          && output_height != SV600_FACTORY_AUTO_HEIGHT)
++      || SV600_FACTORY_TOP + output_height > SV600_FACTORY_MAP_ROWS) {
++    DBG (5, "buffer_sv600_factory_remap: unsupported source %dx%d/%d "
++         "output=%d\n", device_width, source_height, source_stride,
++         output_height);
 +    return SANE_STATUS_INVAL;
 +  }
 +
 +  corrected = malloc(output_bytes);
-+  if (!corrected) {
-+    DBG (5, "buffer_sv600_factory_remap: cannot allocate output\n");
++  if (!corrected)
 +    return SANE_STATUS_NO_MEM;
-+  }
 +  memcpy(current, sv600_factory_map_first, sizeof(current));
 +
-+  for (y = 0; y < output_height; y++) {
++  for (map_y = 0; map_y < SV600_FACTORY_TOP + output_height; map_y++) {
++    int output_y = map_y - SV600_FACTORY_TOP;
 +    int channel;
-+    if (y) {
++
++    if (map_y) {
 +      int item;
 +      for (item = 0; item < 5; item++)
-+        current[item] += sv600_factory_map_deltas[y - 1][item];
++        current[item] += sv600_factory_map_deltas[map_y - 1][item];
 +    }
++    if (output_y < 0)
++      continue;
 +
 +    for (channel = 0; channel < 3; channel++) {
 +      int vertical_offset = channel == 0 ? current[0]
 +        : channel == 2 ? current[1] : 0;
 +      int step = current[channel + 2];
-+      int y_fixed = y * vertical_one + vertical_offset;
++      int y_fixed = map_y * vertical_one + vertical_offset;
 +      int source_y = y_fixed >> 12;
 +      int y_fraction = y_fixed & (vertical_one - 1);
 +      int center = source_width / 2;
-+      /* The original kernel uses a uint accumulator.  The last quarter of a
-+       * 5104-pixel line exceeds INT_MAX even though it remains well within
-+       * UINT32_MAX; a signed accumulator wrapped there and sampled the dark
-+       * opposite edge over the physical upper-left corner of a portrait A4. */
 +      uint32_t x_fixed = ((uint32_t)step >> 1)
 +        + (uint32_t)center * horizontal_one
-+        - (horizontal_one >> 1) - (uint32_t)step * center;
++        - (horizontal_one >> 1) - (uint32_t)step * center
++        + (uint32_t)step * SV600_FACTORY_LEFT;
 +      unsigned char *destination = corrected
-+        + ((size_t)y * source_width * 3) + channel;
++        + ((size_t)output_y * SV600_FACTORY_WIDTH * 3) + channel;
 +      int x;
 +
 +      if (source_y < 0) {
@@ -621,10 +777,10 @@ index 64eb90f2..e4a50d9d 100644
 +        y_fraction = 0;
 +      }
 +
-+      for (x = 0; x < source_width; x++, x_fixed += step) {
++      for (x = 0; x < SV600_FACTORY_WIDTH; x++, x_fixed += step) {
 +        int source_x = x_fixed >> 19;
 +        int x_fraction = x_fixed & (horizontal_one - 1);
-+        const unsigned char *top;
++        int source_x_right;
 +        unsigned int value;
 +
 +        if (source_x < 0) {
@@ -635,22 +791,30 @@ index 64eb90f2..e4a50d9d 100644
 +          source_x = source_width - 1;
 +          x_fraction = 0;
 +        }
-+        top = s->buffers[side] + (size_t)source_y * source_stride
-+          + source_x * 3 + channel;
-+
++        source_x_right = source_x < source_width - 1
++          ? source_x + 1 : source_x;
 +        if (!y_fraction || source_y == source_height - 1) {
-+          value = ((unsigned int)top[0] * (horizontal_one - x_fraction)
-+                   + (unsigned int)top[source_x < source_width - 1 ? 3 : 0]
-+                     * x_fraction) >> 19;
++          unsigned int top_left = sv600_device_sample(
++            s->buffers[side], source_stride, source_y, source_x, channel);
++          unsigned int top_right = sv600_device_sample(
++            s->buffers[side], source_stride, source_y, source_x_right,
++            channel);
++          value = (top_left * (horizontal_one - x_fraction)
++                   + top_right * x_fraction) >> 19;
 +        }
 +        else {
-+          const unsigned char *bottom = top + source_stride;
 +          int x_fraction_q12 = x_fraction >> 7;
-+          unsigned int top_left = top[0];
-+          unsigned int top_right = top[source_x < source_width - 1 ? 3 : 0];
-+          unsigned int bottom_left = bottom[0];
-+          unsigned int bottom_right =
-+            bottom[source_x < source_width - 1 ? 3 : 0];
++          unsigned int top_left = sv600_device_sample(
++            s->buffers[side], source_stride, source_y, source_x, channel);
++          unsigned int top_right = sv600_device_sample(
++            s->buffers[side], source_stride, source_y, source_x_right,
++            channel);
++          unsigned int bottom_left = sv600_device_sample(
++            s->buffers[side], source_stride, source_y + 1, source_x,
++            channel);
++          unsigned int bottom_right = sv600_device_sample(
++            s->buffers[side], source_stride, source_y + 1, source_x_right,
++            channel);
 +          value = (bottom_left * (vertical_one - x_fraction_q12)
 +                     * y_fraction
 +                   + bottom_right * x_fraction_q12 * y_fraction
@@ -665,99 +829,507 @@ index 64eb90f2..e4a50d9d 100644
 +    }
 +  }
 +
-+  memcpy(s->buffers[side], corrected, output_bytes);
-+  free(corrected);
++  free(s->buffers[side]);
++  s->buffers[side] = corrected;
++  s->buff_tot[side] = (int)output_bytes;
++  s->bytes_tot[side] = (int)output_bytes;
++  params->pixels_per_line = SV600_FACTORY_WIDTH;
++  params->bytes_per_line = SV600_FACTORY_WIDTH * 3;
 +  params->lines = output_height;
-+  params->bytes_per_line = source_width * 3;
 +  update_u_params(s);
 +  s->bytes_rx[side] = (int)output_bytes;
 +  s->buff_rx[side] = (int)output_bytes;
 +  DBG (10, "buffer_sv600_factory_remap: finish %dx%d\n",
-+       source_width, output_height);
++       SV600_FACTORY_WIDTH, output_height);
 +  return SANE_STATUS_GOOD;
 +}
 +
-+/* A3L is the complete factory-corrected scan field.  Unlike A4L/A5L it does
-+ * not follow a detected sheet boundary, because the selected format itself
-+ * occupies the whole useful bed. */
-+static SANE_Status
-+buffer_sv600_fixed_flat(struct fujitsu *s, int side, int page,
-+                        int requested_portrait)
++static int
++sv600_write_ppm(const char *path, const unsigned char *pixels,
++                int width, int height, int stride)
 +{
-+  SANE_Parameters *params = &s->s_params;
-+  const int canvas_width = 4961;
-+  const int canvas_height = 3506;
-+  int source_width = params->pixels_per_line;
-+  int source_height = params->lines;
-+  int source_stride = params->bytes_per_line;
-+  int landscape_width;
-+  int landscape_height;
-+  int source_left;
-+  int source_top;
-+  int output_width;
-+  int output_height;
-+  size_t output_bytes;
-+  unsigned char *corrected;
++  FILE *stream = fopen(path, "wb");
 +  int y;
 +
-+  if (page != 3)
-+    return SANE_STATUS_INVAL;
-+  landscape_width = 4961;
-+  landscape_height = 3506;
-+  source_left = (source_width - canvas_width) / 2;
-+  source_top = source_height - canvas_height;
-+  output_width = requested_portrait ? landscape_height : landscape_width;
-+  output_height = requested_portrait ? landscape_width : landscape_height;
-+  output_bytes = (size_t)landscape_width * landscape_height * 3;
-+
-+  DBG (10, "buffer_sv600_fixed_flat: start page=%d output=%dx%d\n",
-+       page, output_width, output_height);
-+  if (params->format != SANE_FRAME_RGB || params->depth != 8
-+      /* Binary emulation rounds the internal color width down to a multiple
-+       * of eight (5096 instead of 5104).  Centre the same factory canvas in
-+       * either raw width; output dimensions remain identical. */
-+      || source_width < canvas_width
-+      || source_height != SV600_FACTORY_A3_ROWS
-+      || source_stride < source_width * 3
-+      || source_left < 0 || source_top < 0
-+      || source_left + landscape_width > source_width
-+      || source_top + landscape_height > source_height
-+      || output_bytes > (size_t)s->buff_tot[side])
-+    return SANE_STATUS_INVAL;
-+
-+  corrected = malloc(output_bytes);
-+  if (!corrected)
-+    return SANE_STATUS_NO_MEM;
-+
-+  for (y = 0; y < landscape_height; y++)
-+    memcpy(corrected + (size_t)y * landscape_width * 3,
-+           s->buffers[side] + (size_t)(source_top + y) * source_stride
-+             + source_left * 3,
-+           (size_t)landscape_width * 3);
-+
-+  if (requested_portrait) {
-+    for (y = 0; y < landscape_height; y++) {
-+      int x;
-+      for (x = 0; x < landscape_width; x++) {
-+        const unsigned char *source = corrected
-+          + ((size_t)y * landscape_width + x) * 3;
-+        unsigned char *destination = s->buffers[side]
-+          + ((size_t)(landscape_width - 1 - x) * landscape_height + y) * 3;
-+        memcpy(destination, source, 3);
-+      }
++  if (!stream)
++    return 0;
++  if (fprintf(stream, "P6\n%d %d\n255\n", width, height) < 1) {
++    fclose(stream);
++    return 0;
++  }
++  for (y = 0; y < height; y++) {
++    if (fwrite(pixels + (size_t)y * stride, 1, (size_t)width * 3,
++               stream) != (size_t)width * 3) {
++      fclose(stream);
++      return 0;
 +    }
 +  }
-+  else
-+    memcpy(s->buffers[side], corrected, output_bytes);
-+  free(corrected);
++  return fclose(stream) == 0;
++}
 +
++static int
++sv600_unix_to_wine_path(const char *source, char *destination, size_t size)
++{
++  size_t index;
++  size_t length = strlen(source);
++
++  if (length + 3 > size || source[0] != '/')
++    return 0;
++  destination[0] = 'Z';
++  destination[1] = ':';
++  for (index = 0; index <= length; index++)
++    destination[index + 2] = source[index] == '/' ? '\\' : source[index];
++  return 1;
++}
++
++static int
++sv600_read_ppm(const char *path, unsigned char *pixels, size_t capacity,
++               int *width, int *height)
++{
++  FILE *stream = fopen(path, "rb");
++  char line[128];
++  int maximum;
++  size_t bytes;
++
++  if (!stream)
++    return 0;
++  if (!fgets(line, sizeof(line), stream) || strcmp(line, "P6\n") != 0
++      || !fgets(line, sizeof(line), stream)
++      || sscanf(line, "%d %d", width, height) != 2
++      || !fgets(line, sizeof(line), stream)
++      || sscanf(line, "%d", &maximum) != 1 || maximum != 255
++      || *width < 1 || *height < 1) {
++    fclose(stream);
++    return 0;
++  }
++  if (*width > 20000 || *height > 20000
++      || (size_t)*width > SIZE_MAX / (size_t)*height / 3) {
++    fclose(stream);
++    return 0;
++  }
++  bytes = (size_t)*width * (size_t)*height * 3;
++  if (bytes > capacity || fread(pixels, 1, bytes, stream) != bytes) {
++    fclose(stream);
++    return 0;
++  }
++  return fclose(stream) == 0;
++}
++
++static unsigned char *
++sv600_read_ppm_alloc(const char *path, int *width, int *height)
++{
++  FILE *stream = fopen(path, "rb");
++  unsigned char *pixels = NULL;
++  char line[128];
++  int maximum;
++  size_t bytes;
++
++  if (!stream)
++    return NULL;
++  if (!fgets(line, sizeof(line), stream) || strcmp(line, "P6\n") != 0
++      || !fgets(line, sizeof(line), stream)
++      || sscanf(line, "%d %d", width, height) != 2
++      || !fgets(line, sizeof(line), stream)
++      || sscanf(line, "%d", &maximum) != 1 || maximum != 255
++      || *width < 1 || *height < 1 || *width > 20000 || *height > 20000
++      || (size_t)*width > SIZE_MAX / (size_t)*height / 3) {
++    fclose(stream);
++    return NULL;
++  }
++  bytes = (size_t)*width * (size_t)*height * 3;
++  pixels = malloc(bytes);
++  if (!pixels || fread(pixels, 1, bytes, stream) != bytes
++      || fclose(stream) != 0) {
++    free(pixels);
++    return NULL;
++  }
++  return pixels;
++}
++
++/* Run the same P2IDIGCROP and bookbound exports used by ScanSnap Home.  The
++ * executable is isolated in a Wine child process so no PE code is loaded into
++ * the SANE frontend. */
++static SANE_Status
++buffer_sv600_vendor_geometry(struct fujitsu *s, int side, int page)
++{
++  static const char helper[] =
++    "/usr/lib/scansnap-sv600/sv600-factory-pipeline.exe";
++  static const char vendor_dir[] = "/usr/lib/scansnap-sv600";
++  SANE_Parameters *params = &s->s_params;
++  char directory[] = "/tmp/scansnap-sv600-XXXXXX";
++  char input_path[sizeof(directory) + 16];
++  char output_path[sizeof(directory) + 16];
++  char wine_vendor[512];
++  char wine_input[512];
++  char wine_output[512];
++  const char *mode = page == 3 ? "a3" : page == 4 ? "a4"
++    : page == 5 ? "a5" : "detect";
++  pid_t child;
++  pid_t waited;
++  int status = 0;
++  int output_width = 0;
++  int output_height = 0;
++  size_t output_bytes;
++  SANE_Status ret = SANE_STATUS_IO_ERROR;
++
++  DBG (10, "buffer_sv600_vendor_geometry: start page=%d mode=%s\n",
++       page, mode);
++  if (params->format != SANE_FRAME_RGB || params->depth != 8
++      || params->pixels_per_line != SV600_FACTORY_WIDTH
++      || (page == 3 && params->lines != SV600_FACTORY_A3_HEIGHT)
++      || (page != 3 && params->lines != SV600_FACTORY_AUTO_HEIGHT)
++      || access(helper, X_OK) != 0
++      || access("/usr/lib/scansnap-sv600/P2IDIGCROP.dll", R_OK) != 0
++      || access("/usr/lib/scansnap-sv600/bookbound.dll", R_OK) != 0)
++    return SANE_STATUS_INVAL;
++  if (!mkdtemp(directory))
++    return SANE_STATUS_IO_ERROR;
++  snprintf(input_path, sizeof(input_path), "%s/input.ppm", directory);
++  snprintf(output_path, sizeof(output_path), "%s/output.ppm", directory);
++
++  if (!sv600_write_ppm(input_path, s->buffers[side],
++                       params->pixels_per_line, params->lines,
++                       params->bytes_per_line)
++      || !sv600_unix_to_wine_path(vendor_dir, wine_vendor,
++                                  sizeof(wine_vendor))
++      || !sv600_unix_to_wine_path(input_path, wine_input, sizeof(wine_input))
++      || !sv600_unix_to_wine_path(output_path, wine_output,
++                                  sizeof(wine_output)))
++    goto cleanup;
++
++  child = fork();
++  if (child == 0) {
++    if (dup2(STDERR_FILENO, STDOUT_FILENO) < 0)
++      _exit(127);
++    setenv("WINEDEBUG", "-all", 1);
++    setenv("WINEDLLOVERRIDES", "mscoree,mshtml=", 1);
++    execl("/usr/bin/wine", "wine", helper, wine_vendor, wine_input,
++          wine_output, mode, (char *)NULL);
++    _exit(127);
++  }
++  if (child < 0)
++    goto cleanup;
++  do {
++    waited = waitpid(child, &status, 0);
++  } while (waited < 0 && errno == EINTR);
++  if (waited != child || !WIFEXITED(status) || WEXITSTATUS(status) != 0) {
++    DBG (5, "buffer_sv600_vendor_geometry: helper status=%d\n", status);
++    goto cleanup;
++  }
++
++  if (!sv600_read_ppm(output_path, s->buffers[side],
++                       (size_t)s->buff_tot[side],
++                       &output_width, &output_height))
++    goto cleanup;
++  output_bytes = (size_t)output_width * output_height * 3;
 +  params->pixels_per_line = output_width;
 +  params->bytes_per_line = output_width * 3;
 +  params->lines = output_height;
 +  update_u_params(s);
 +  s->bytes_rx[side] = (int)output_bytes;
 +  s->buff_rx[side] = (int)output_bytes;
-+  DBG (10, "buffer_sv600_fixed_flat: finish\n");
++  ret = SANE_STATUS_GOOD;
++
++cleanup:
++  unlink(output_path);
++  unlink(input_path);
++  rmdir(directory);
++  DBG (10, "buffer_sv600_vendor_geometry: finish %dx%d ret=%d\n",
++       output_width, output_height, ret);
++  return ret;
++}
++
++/* ScanSnap Home performs output-resolution conversion after gamma, sRGB and
++ * USM.  P2IATRES supplies both the exact output-size rounding and the pixel
++ * kernel, so the replay is independent of frontend interpolation choices. */
++static SANE_Status
++buffer_sv600_vendor_resize(struct fujitsu *s, int side, int resolution)
++{
++  static const char helper[] =
++    "/usr/lib/scansnap-sv600/sv600-factory-resize.exe";
++  static const char vendor_dir[] = "/usr/lib/scansnap-sv600";
++  SANE_Parameters *params = &s->s_params;
++  char directory[] = "/tmp/scansnap-sv600-resize-XXXXXX";
++  char input_path[sizeof(directory) + 16];
++  char output_path[sizeof(directory) + 16];
++  char wine_vendor[512];
++  char wine_input[512];
++  char wine_output[512];
++  char resolution_text[16];
++  unsigned char *resized = NULL;
++  int source_width = params->pixels_per_line;
++  int source_height = params->lines;
++  int output_width = 0;
++  int output_height = 0;
++  size_t output_bytes;
++  pid_t child;
++  pid_t waited;
++  int status = 0;
++  SANE_Status ret = SANE_STATUS_IO_ERROR;
++
++  DBG (10, "buffer_sv600_vendor_resize: start %dx%d %d dpi\n",
++       source_width, source_height, resolution);
++  if (params->format != SANE_FRAME_RGB || params->depth != 8
++      || params->bytes_per_line != source_width * 3
++      || (resolution != 150 && resolution != 200 && resolution != 600)
++      || access(helper, X_OK) != 0
++      || access("/usr/lib/scansnap-sv600/P2IATRES.DLL", R_OK) != 0
++      || access("/usr/lib/scansnap-sv600/i3ipCore/I3ipShare.dll", R_OK) != 0
++      || access("/usr/lib/scansnap-sv600/i3ipCore/I3ipCommon.dll", R_OK) != 0)
++    return SANE_STATUS_INVAL;
++  if (!mkdtemp(directory))
++    return SANE_STATUS_IO_ERROR;
++  snprintf(input_path, sizeof(input_path), "%s/input.ppm", directory);
++  snprintf(output_path, sizeof(output_path), "%s/output.ppm", directory);
++  snprintf(resolution_text, sizeof(resolution_text), "%d", resolution);
++
++  if (!sv600_write_ppm(input_path, s->buffers[side], source_width,
++                       source_height, params->bytes_per_line)
++      || !sv600_unix_to_wine_path(vendor_dir, wine_vendor,
++                                  sizeof(wine_vendor))
++      || !sv600_unix_to_wine_path(input_path, wine_input, sizeof(wine_input))
++      || !sv600_unix_to_wine_path(output_path, wine_output,
++                                  sizeof(wine_output)))
++    goto cleanup;
++
++  child = fork();
++  if (child == 0) {
++    if (dup2(STDERR_FILENO, STDOUT_FILENO) < 0)
++      _exit(127);
++    setenv("WINEDEBUG", "-all", 1);
++    setenv("WINEDLLOVERRIDES", "mscoree,mshtml=", 1);
++    execl("/usr/bin/wine", "wine", helper, wine_vendor, wine_input,
++          wine_output, resolution_text, (char *)NULL);
++    _exit(127);
++  }
++  if (child < 0)
++    goto cleanup;
++  do {
++    waited = waitpid(child, &status, 0);
++  } while (waited < 0 && errno == EINTR);
++  if (waited != child || !WIFEXITED(status) || WEXITSTATUS(status) != 0) {
++    DBG (5, "buffer_sv600_vendor_resize: helper status=%d\n", status);
++    goto cleanup;
++  }
++
++  resized = sv600_read_ppm_alloc(output_path, &output_width, &output_height);
++  if (!resized
++      || output_width != source_width * resolution / 300
++      || output_height != source_height * resolution / 300)
++    goto cleanup;
++  output_bytes = (size_t)output_width * (size_t)output_height * 3;
++  if (output_bytes > INT_MAX)
++    goto cleanup;
++
++  free(s->buffers[side]);
++  s->buffers[side] = resized;
++  resized = NULL;
++  s->buff_tot[side] = (int)output_bytes;
++  s->bytes_tot[side] = (int)output_bytes;
++  params->pixels_per_line = output_width;
++  params->bytes_per_line = output_width * 3;
++  params->lines = output_height;
++  update_u_params(s);
++  s->bytes_rx[side] = (int)output_bytes;
++  s->buff_rx[side] = (int)output_bytes;
++  ret = SANE_STATUS_GOOD;
++
++cleanup:
++  free(resized);
++  unlink(output_path);
++  unlink(input_path);
++  rmdir(directory);
++  DBG (10, "buffer_sv600_vendor_resize: finish %dx%d ret=%d\n",
++       output_width, output_height, ret);
++  return ret;
++}
++
++static SANE_Status
++buffer_sv600_rotate_portrait(struct fujitsu *s, int side)
++{
++  SANE_Parameters *params = &s->s_params;
++  int old_width = params->pixels_per_line;
++  int old_height = params->lines;
++  size_t bytes = (size_t)old_width * old_height * 3;
++  unsigned char *rotated;
++  int y;
++
++  if (params->format != SANE_FRAME_RGB || params->depth != 8
++      || params->bytes_per_line != old_width * 3
++      || bytes > (size_t)s->buff_tot[side])
++    return SANE_STATUS_INVAL;
++  rotated = malloc(bytes);
++  if (!rotated)
++    return SANE_STATUS_NO_MEM;
++  for (y = 0; y < old_height; y++) {
++    int x;
++    for (x = 0; x < old_width; x++)
++      memcpy(rotated + ((size_t)(old_width - 1 - x) * old_height + y) * 3,
++             s->buffers[side] + ((size_t)y * old_width + x) * 3, 3);
++  }
++  memcpy(s->buffers[side], rotated, bytes);
++  free(rotated);
++  params->pixels_per_line = old_height;
++  params->bytes_per_line = old_height * 3;
++  params->lines = old_width;
++  update_u_params(s);
++  s->bytes_rx[side] = (int)bytes;
++  s->buff_rx[side] = (int)bytes;
++  return SANE_STATUS_GOOD;
++}
++
++/* Reproduce the late ScanSnap Home document-color chain. */
++static unsigned char
++sv600_srgb_interpolate(int red, int green, int blue, int channel)
++{
++  int red_cell = red >> 4;
++  int green_cell = green >> 4;
++  int blue_cell = blue >> 4;
++  int red_fraction = red & 15;
++  int green_fraction = green & 15;
++  int blue_fraction = blue & 15;
++  int red_inverse = 16 - red_fraction;
++  int green_inverse = 16 - green_fraction;
++  int blue_inverse = 16 - blue_fraction;
++  size_t base = (((size_t)red_cell * 17 + green_cell) * 17
++                 + blue_cell) * 3 + channel;
++  const size_t red_step = 17 * 17 * 3;
++  const size_t green_step = 17 * 3;
++  const size_t blue_step = 3;
++  int lower_left;
++  int lower_right;
++  int upper_left;
++  int upper_right;
++  int lower;
++  int upper;
++
++  lower_left = (sv600_srgb_grid[base] * red_inverse
++                + sv600_srgb_grid[base + red_step] * red_fraction) >> 4;
++  lower_right = (sv600_srgb_grid[base + green_step] * red_inverse
++                 + sv600_srgb_grid[base + red_step + green_step]
++                   * red_fraction) >> 4;
++  lower = (lower_left * green_inverse
++           + lower_right * green_fraction) >> 4;
++
++  upper_left = (sv600_srgb_grid[base + blue_step] * red_inverse
++                + sv600_srgb_grid[base + red_step + blue_step]
++                  * red_fraction) >> 4;
++  upper_right =
++    (sv600_srgb_grid[base + green_step + blue_step] * red_inverse
++     + sv600_srgb_grid[base + red_step + green_step + blue_step]
++       * red_fraction) >> 4;
++  upper = (upper_left * green_inverse
++           + upper_right * green_fraction) >> 4;
++  return (unsigned char)((lower * blue_inverse
++                          + upper * blue_fraction) >> 4);
++}
++
++static SANE_Status
++buffer_sv600_factory_gamma(struct fujitsu *s, int side)
++{
++  SANE_Parameters *params = &s->s_params;
++  int width = params->pixels_per_line;
++  int height = params->lines;
++  int stride = params->bytes_per_line;
++  size_t bytes = (size_t)stride * height;
++  unsigned char *pixels = s->buffers[side];
++  int y;
++
++  DBG (10, "buffer_sv600_factory_gamma: start %dx%d\n", width, height);
++  if (params->format != SANE_FRAME_RGB || params->depth != 8
++      || width < 1 || height < 1 || stride < width * 3
++      || bytes > (size_t)s->buff_tot[side])
++    return SANE_STATUS_INVAL;
++
++  for (y = 0; y < height; y++) {
++    unsigned char *pixel = pixels + (size_t)y * stride;
++    int x;
++    for (x = 0; x < width; x++, pixel += 3) {
++      pixel[0] = sv600_gamma_10_to_18[pixel[0]];
++      pixel[1] = sv600_gamma_10_to_18[pixel[1]];
++      pixel[2] = sv600_gamma_10_to_18[pixel[2]];
++    }
++  }
++  DBG (10, "buffer_sv600_factory_gamma: finish\n");
++  return SANE_STATUS_GOOD;
++}
++
++/* After output-resolution conversion, ScanSnap Home interpolates the SV600
++ * 17^3 RGB control grid with an integer shift after each axis, then runs
++ * SsSvcDoUSM2.  The SV600 entry selects strength 50; PfuSsSvcHelper uses a
++ * radius-two 3/4 kernel and a soft threshold of eight. */
++static SANE_Status
++buffer_sv600_factory_finish(struct fujitsu *s, int side)
++{
++  SANE_Parameters *params = &s->s_params;
++  int width = params->pixels_per_line;
++  int height = params->lines;
++  int stride = params->bytes_per_line;
++  size_t bytes = (size_t)stride * height;
++  unsigned char *pixels = s->buffers[side];
++  unsigned char *sharpened;
++  int y;
++
++  DBG (10, "buffer_sv600_factory_finish: start %dx%d\n", width, height);
++  if (params->format != SANE_FRAME_RGB || params->depth != 8
++      || width < 1 || height < 1 || stride < width * 3
++      || bytes > (size_t)s->buff_tot[side])
++    return SANE_STATUS_INVAL;
++
++  for (y = 0; y < height; y++) {
++    unsigned char *pixel = pixels + (size_t)y * stride;
++    int x;
++    for (x = 0; x < width; x++, pixel += 3) {
++      int red = pixel[0];
++      int green = pixel[1];
++      int blue = pixel[2];
++      pixel[0] = sv600_srgb_interpolate(red, green, blue, 0);
++      pixel[1] = sv600_srgb_interpolate(red, green, blue, 1);
++      pixel[2] = sv600_srgb_interpolate(red, green, blue, 2);
++    }
++  }
++
++  sharpened = malloc(bytes);
++  if (!sharpened)
++    return SANE_STATUS_NO_MEM;
++  memcpy(sharpened, pixels, bytes);
++
++  for (y = 2; y < height - 2; y++) {
++    int x;
++    for (x = 2; x < width - 2; x++) {
++      int channel;
++      for (channel = 0; channel < 3; channel++) {
++        size_t center_offset = (size_t)y * stride + x * 3 + channel;
++        int center = pixels[center_offset];
++        int sum = 3 *
++          (pixels[(size_t)(y - 2) * stride + (x - 2) * 3 + channel]
++           + pixels[(size_t)(y - 2) * stride + (x + 2) * 3 + channel]
++           + pixels[(size_t)(y + 2) * stride + (x - 2) * 3 + channel]
++           + pixels[(size_t)(y + 2) * stride + (x + 2) * 3 + channel])
++          + 4 *
++          (pixels[(size_t)(y - 2) * stride + x * 3 + channel]
++           + pixels[(size_t)y * stride + (x - 2) * 3 + channel]
++           + center
++           + pixels[(size_t)y * stride + (x + 2) * 3 + channel]
++           + pixels[(size_t)(y + 2) * stride + x * 3 + channel]);
++        int delta = center - (sum >> 5);
++        int magnitude = delta < 0 ? -delta : delta;
++        if (magnitude >= 8) {
++          int correction = (magnitude - 7) / 2;
++          int value = center + (delta < 0 ? -correction : correction);
++          if (value < 0)
++            value = 0;
++          else if (value > 255)
++            value = 255;
++          sharpened[center_offset] = (unsigned char)value;
++        }
++      }
++    }
++  }
++
++  memcpy(pixels, sharpened, bytes);
++  free(sharpened);
++  DBG (10, "buffer_sv600_factory_finish: finish\n");
 +  return SANE_STATUS_GOOD;
 +}
 +
@@ -797,765 +1369,31 @@ index 64eb90f2..e4a50d9d 100644
 +  return SANE_STATUS_GOOD;
 +}
 +
-+/* Render directly from the scanner buffer.  Crop coordinates are expressed
-+ * in the first rectified image, but are folded into this source mapping so the
-+ * final page still receives only one interpolation pass. */
-+static void
-+sv600_render_perspective(struct fujitsu *s, int side,
-+                         unsigned char *corrected,
-+                         int source_width, int source_height,
-+                         int output_width, int output_height,
-+                         int output_portrait, const double coefficients[8],
-+                         int crop_left, int crop_top,
-+                         int crop_right, int crop_bottom)
-+{
-+  SANE_Parameters *params = &s->s_params;
-+  double horizontal_span = output_width - 1 - crop_left - crop_right;
-+  double vertical_span = output_height - 1 - crop_top - crop_bottom;
-+  int y;
-+
-+  (void)output_portrait;
-+
-+  for (y = 0; y < output_height; y++) {
-+    double target_y = crop_top + y * vertical_span
-+      / max(1, output_height - 1);
-+    int x;
-+    for (x = 0; x < output_width; x++) {
-+      double target_x = crop_left + x * horizontal_span
-+        / max(1, output_width - 1);
-+      double rectified_x = target_x;
-+      double rectified_y = target_y;
-+      double source_x[3];
-+      double source_y[3];
-+      unsigned char *output = corrected
-+        + ((size_t)y * output_width + x) * 3;
-+      int valid = 1;
-+      int channel;
-+
-+      for (channel = 0; channel < 3; channel++) {
-+        double channel_y = rectified_y;
-+        {
-+          double denominator = coefficients[6] * rectified_x
-+            + coefficients[7] * channel_y + 1;
-+          source_x[channel] = (coefficients[0] * rectified_x
-+                               + coefficients[1] * channel_y
-+                               + coefficients[2]) / denominator;
-+          source_y[channel] = (coefficients[3] * rectified_x
-+                               + coefficients[4] * channel_y
-+                               + coefficients[5]) / denominator;
-+        }
-+        if (source_x[channel] < 0 || source_y[channel] < 0
-+            || source_x[channel] > source_width - 1
-+            || source_y[channel] > source_height - 1)
-+          valid = 0;
-+      }
-+
-+      if (!valid) {
-+        output[0] = output[1] = output[2] = 255;
-+      }
-+      else {
-+        for (channel = 0; channel < 3; channel++) {
-+          int x0 = (int)source_x[channel];
-+          int y0 = (int)source_y[channel];
-+          int x1 = min(x0 + 1, source_width - 1);
-+          int y1 = min(y0 + 1, source_height - 1);
-+          double dx = source_x[channel] - x0;
-+          double dy = source_y[channel] - y0;
-+          const unsigned char *top_left = s->buffers[side]
-+            + (size_t)y0 * params->bytes_per_line + x0 * 3;
-+          const unsigned char *top_right = s->buffers[side]
-+            + (size_t)y0 * params->bytes_per_line + x1 * 3;
-+          const unsigned char *bottom_left = s->buffers[side]
-+            + (size_t)y1 * params->bytes_per_line + x0 * 3;
-+          const unsigned char *bottom_right = s->buffers[side]
-+            + (size_t)y1 * params->bytes_per_line + x1 * 3;
-+          double top = top_left[channel] * (1 - dx)
-+            + top_right[channel] * dx;
-+          double bottom = bottom_left[channel] * (1 - dx)
-+            + bottom_right[channel] * dx;
-+          output[channel] = (unsigned char)(top * (1 - dy)
-+                                             + bottom * dy + 0.5);
-+        }
-+      }
-+    }
-+  }
-+}
-+
-+static int
-+sv600_line_luminance_percentile(const unsigned char *image,
-+                                int width, int height,
-+                                int horizontal, int coordinate,
-+                                int start, int end, int percentile)
-+{
-+  unsigned long histogram[256];
-+  unsigned long count = 0;
-+  unsigned long target;
-+  unsigned long cumulative = 0;
-+  int position;
-+
-+  memset(histogram, 0, sizeof(histogram));
-+  for (position = start; position < end; position++) {
-+    int x = horizontal ? position : coordinate;
-+    int y = horizontal ? coordinate : position;
-+    const unsigned char *pixel;
-+
-+    if (x < 0 || x >= width || y < 0 || y >= height)
-+      continue;
-+    pixel = image + ((size_t)y * width + x) * 3;
-+    histogram[sv600_luminance(pixel)]++;
-+    count++;
-+  }
-+  if (!count)
-+    return 255;
-+
-+  target = (count * percentile + 99) / 100;
-+  for (position = 0; position < 256; position++) {
-+    cumulative += histogram[position];
-+    if (cumulative >= target)
-+      return position;
-+  }
-+  return 255;
-+}
-+
-+/* Find dark pixels that are eight-connected to one requested image edge.
-+ * Restrict the flood fill to a narrow band: interior text must not influence
-+ * document cropping even when it is very dark. */
-+static int
-+sv600_connected_border_depth(const unsigned char *image,
-+                             int width, int height, int side,
-+                             int maximum_depth, int threshold)
-+{
-+  int band_width = side < 2 ? width : maximum_depth + 1;
-+  int band_height = side < 2 ? maximum_depth + 1 : height;
-+  int band_size = band_width * band_height;
-+  unsigned char *mask = NULL;
-+  int *queue = NULL;
-+  int head = 0;
-+  int tail = 0;
-+  int deepest = -1;
-+  int band_y;
-+
-+  if (maximum_depth < 0 || band_width < 1 || band_height < 1)
-+    return -1;
-+  mask = malloc((size_t)band_size);
-+  queue = malloc((size_t)band_size * sizeof(*queue));
-+  if (!mask || !queue) {
-+    DBG (5, "sv600_connected_border_depth: cannot allocate edge buffers\n");
-+    free(queue);
-+    free(mask);
-+    return -1;
-+  }
-+
-+  for (band_y = 0; band_y < band_height; band_y++) {
-+    int band_x;
-+    for (band_x = 0; band_x < band_width; band_x++) {
-+      int distance = side < 2 ? band_y : band_x;
-+      int x = side < 2 ? band_x
-+        : side == 2 ? distance : width - 1 - distance;
-+      int y = side < 2
-+        ? side == 0 ? distance : height - 1 - distance
-+        : band_y;
-+      const unsigned char *pixel = image
-+        + ((size_t)y * width + x) * 3;
-+      mask[band_y * band_width + band_x]
-+        = sv600_luminance(pixel) < threshold ? 1 : 0;
-+    }
-+  }
-+
-+  if (side < 2) {
-+    int x;
-+    for (x = 0; x < band_width; x++) {
-+      if (mask[x] == 1) {
-+        mask[x] = 2;
-+        queue[tail++] = x;
-+      }
-+    }
-+  }
-+  else {
-+    int y;
-+    for (y = 0; y < band_height; y++) {
-+      int position = y * band_width;
-+      if (mask[position] == 1) {
-+        mask[position] = 2;
-+        queue[tail++] = position;
-+      }
-+    }
-+  }
-+
-+  while (head < tail) {
-+    int position = queue[head++];
-+    int band_x = position % band_width;
-+    int current_y = position / band_width;
-+    int distance = side < 2 ? current_y : band_x;
-+    int offset_y;
-+
-+    deepest = max(deepest, distance);
-+    for (offset_y = -1; offset_y <= 1; offset_y++) {
-+      int neighbour_y = current_y + offset_y;
-+      int offset_x;
-+      if (neighbour_y < 0 || neighbour_y >= band_height)
-+        continue;
-+      for (offset_x = -1; offset_x <= 1; offset_x++) {
-+        int neighbour_x = band_x + offset_x;
-+        int neighbour;
-+        if ((!offset_x && !offset_y)
-+            || neighbour_x < 0 || neighbour_x >= band_width)
-+          continue;
-+        neighbour = neighbour_y * band_width + neighbour_x;
-+        if (mask[neighbour] == 1) {
-+          mask[neighbour] = 2;
-+          queue[tail++] = neighbour;
-+        }
-+      }
-+    }
-+  }
-+
-+  free(queue);
-+  free(mask);
-+  return deepest;
-+}
-+
-+/* Measure each edge against nearby clean paper rather than reserving a fixed
-+ * white frame.  The twentieth percentile notices a broad table/shadow strip
-+ * but ignores ordinary sparse text.  A second, darker threshold flood-fills
-+ * pixels connected to the outer boundary, catching hairlines and corner
-+ * wedges that occupy too little of a row for the percentile to notice.  Only
-+ * affected sides receive the one-millimetre print-safety allowance.
-+ */
-+static void
-+sv600_detect_clean_crop(const unsigned char *image, int width, int height,
-+                        int safety_x, int safety_y,
-+                        int *crop_left, int *crop_top,
-+                        int *crop_right, int *crop_bottom)
-+{
-+  int maximum_crop = max(2, min(width, height) / 25);
-+  int horizontal_start = width / 20;
-+  int horizontal_end = width - horizontal_start;
-+  int vertical_start = height / 20;
-+  int vertical_end = height - vertical_start;
-+  int *crops[4] = {crop_top, crop_bottom, crop_left, crop_right};
-+  int connected_depths[4] = {-1, -1, -1, -1};
-+  int side;
-+
-+  *crop_left = *crop_top = *crop_right = *crop_bottom = 0;
-+  for (side = 0; side < 4; side++) {
-+    int reference = 0;
-+    int threshold;
-+    int dark_threshold;
-+    int safety;
-+    int distance;
-+
-+    for (distance = maximum_crop * 3 / 4;
-+         distance <= maximum_crop; distance++) {
-+      int horizontal = side < 2;
-+      int coordinate;
-+      int brightness;
-+
-+      if (side == 0)
-+        coordinate = distance;
-+      else if (side == 1)
-+        coordinate = height - 1 - distance;
-+      else if (side == 2)
-+        coordinate = distance;
-+      else
-+        coordinate = width - 1 - distance;
-+      brightness = sv600_line_luminance_percentile(
-+        image, width, height, horizontal, coordinate,
-+        horizontal ? horizontal_start : vertical_start,
-+        horizontal ? horizontal_end : vertical_end, 20);
-+      reference = max(reference, brightness);
-+    }
-+
-+    threshold = max(0, reference - 12);
-+    dark_threshold = max(64, min(160, reference - 32));
-+    safety = side < 2 ? safety_y : safety_x;
-+    safety = max(1, min(maximum_crop - 1, safety));
-+    connected_depths[side] = sv600_connected_border_depth(
-+      image, width, height, side, maximum_crop - safety,
-+      dark_threshold);
-+    for (distance = 0; distance <= maximum_crop; distance++) {
-+      int horizontal = side < 2;
-+      int coordinate;
-+      int brightness;
-+
-+      if (side == 0)
-+        coordinate = distance;
-+      else if (side == 1)
-+        coordinate = height - 1 - distance;
-+      else if (side == 2)
-+        coordinate = distance;
-+      else
-+        coordinate = width - 1 - distance;
-+      brightness = sv600_line_luminance_percentile(
-+        image, width, height, horizontal, coordinate,
-+        horizontal ? horizontal_start : vertical_start,
-+        horizontal ? horizontal_end : vertical_end, 20);
-+      if (brightness < threshold)
-+        *crops[side] = min(maximum_crop, distance + 2);
-+    }
-+    if (*crops[side] || connected_depths[side] >= 0)
-+      *crops[side] = min(maximum_crop,
-+        max(*crops[side], connected_depths[side] + 1) + safety);
-+  }
-+
-+  DBG (15, "sv600_detect_clean_crop: connected=%d:%d:%d:%d safety=%d:%d\n",
-+       connected_depths[2], connected_depths[0],
-+       connected_depths[3], connected_depths[1], safety_x, safety_y);
-+}
-+
-+/* The SV600 scans a projected view of the mat.  ScanSnap Home identifies the
-+ * document after acquisition and applies a perspective transform.  Reproduce
-+ * the useful flat-document part here without adding an OpenCV dependency. */
-+static SANE_Status
-+buffer_sv600_perspective(struct fujitsu *s, int side,
-+                         int requested_portrait, int fixed_page)
-+{
-+  SANE_Parameters *params = &s->s_params;
-+  unsigned long histogram[256];
-+  unsigned char *mask = NULL;
-+  unsigned char *corrected = NULL;
-+  int *queue = NULL;
-+  struct sv600_point corners[4];
-+  double coefficients[8];
-+  int source_width = params->pixels_per_line;
-+  int source_height = params->lines;
-+  int step;
-+  int grid_width;
-+  int grid_height;
-+  int grid_size;
-+  int threshold = 96;
-+  int best_count = 0;
-+  int best_x[4] = {0, 0, 0, 0};
-+  int best_y[4] = {0, 0, 0, 0};
-+  int output_width;
-+  int output_height;
-+  int output_portrait;
-+  int rotation = 0;
-+  int crop_left;
-+  int crop_top;
-+  int crop_right;
-+  int crop_bottom;
-+  size_t output_bytes;
-+  int index;
-+  SANE_Status ret = SANE_STATUS_GOOD;
-+
-+  DBG (10, "buffer_sv600_perspective: start fixed=%d\n", fixed_page);
-+
-+  if (params->format != SANE_FRAME_RGB || params->depth != 8
-+      || params->bytes_per_line < source_width * 3
-+      || source_width < 64 || source_height < 64) {
-+    DBG (5, "buffer_sv600_perspective: unsupported image format\n");
-+    ret = fixed_page ? SANE_STATUS_INVAL : SANE_STATUS_GOOD;
-+    goto cleanup;
-+  }
-+
-+  /* Corner errors are amplified across a perspective-corrected page.  Keep
-+   * the detection grid fine enough for A4 rules to remain square while still
-+   * avoiding a full-resolution flood-fill allocation. */
-+  step = max(source_width, source_height) / 1280;
-+  if (step < 1)
-+    step = 1;
-+  grid_width = (source_width + step - 1) / step;
-+  grid_height = (source_height + step - 1) / step;
-+  grid_size = grid_width * grid_height;
-+
-+  mask = calloc((size_t)grid_size, 1);
-+  queue = malloc((size_t)grid_size * sizeof(*queue));
-+  if (!mask || !queue) {
-+    DBG (5, "buffer_sv600_perspective: cannot allocate detection buffers\n");
-+    ret = SANE_STATUS_NO_MEM;
-+    goto cleanup;
-+  }
-+
-+  memset(histogram, 0, sizeof(histogram));
-+  for (index = 0; index < grid_size; index++) {
-+    int grid_x = index % grid_width;
-+    int grid_y = index / grid_width;
-+    int source_x = min(grid_x * step, source_width - 1);
-+    int source_y = min(grid_y * step, source_height - 1);
-+    const unsigned char *pixel = s->buffers[side]
-+      + (size_t)source_y * params->bytes_per_line + source_x * 3;
-+    histogram[sv600_luminance(pixel)]++;
-+  }
-+
-+  {
-+    unsigned long total = (unsigned long)grid_size;
-+    unsigned long background_count = 0;
-+    double weighted_total = 0;
-+    double background_sum = 0;
-+    double best_variance = -1;
-+    int value;
-+
-+    for (value = 0; value < 256; value++)
-+      weighted_total += value * (double)histogram[value];
-+    for (value = 0; value < 255; value++) {
-+      unsigned long foreground_count;
-+      double background_mean;
-+      double foreground_mean;
-+      double variance;
-+      background_count += histogram[value];
-+      background_sum += value * (double)histogram[value];
-+      foreground_count = total - background_count;
-+      if (!background_count || !foreground_count)
-+        continue;
-+      background_mean = background_sum / background_count;
-+      foreground_mean = (weighted_total - background_sum) / foreground_count;
-+      variance = background_count * (double)foreground_count
-+        * (background_mean - foreground_mean)
-+        * (background_mean - foreground_mean);
-+      if (variance > best_variance) {
-+        best_variance = variance;
-+        threshold = value;
-+      }
-+    }
-+    threshold = max(48, min(176, threshold));
-+  }
-+
-+  for (index = 0; index < grid_size; index++) {
-+    int grid_x = index % grid_width;
-+    int grid_y = index / grid_width;
-+    int source_x = min(grid_x * step, source_width - 1);
-+    int source_y = min(grid_y * step, source_height - 1);
-+    const unsigned char *pixel = s->buffers[side]
-+      + (size_t)source_y * params->bytes_per_line + source_x * 3;
-+    if (sv600_luminance(pixel) > threshold)
-+      mask[index] = 1;
-+  }
-+
-+  for (index = 0; index < grid_size; index++) {
-+    int head;
-+    int tail;
-+    int count;
-+    int corner_x[4];
-+    int corner_y[4];
-+    int corner_score[4];
-+
-+    if (mask[index] != 1)
-+      continue;
-+    head = 0;
-+    tail = 0;
-+    count = 0;
-+    queue[tail++] = index;
-+    mask[index] = 2;
-+    corner_score[0] = corner_score[3] = grid_width + grid_height + 1;
-+    corner_score[1] = corner_score[2] = -grid_width - grid_height - 1;
-+
-+    while (head < tail) {
-+      int position = queue[head++];
-+      int x = position % grid_width;
-+      int y = position / grid_width;
-+      int score;
-+      count++;
-+
-+      score = x + y;
-+      if (score < corner_score[0]) {
-+        corner_score[0] = score;
-+        corner_x[0] = x;
-+        corner_y[0] = y;
-+      }
-+      if (score > corner_score[2]) {
-+        corner_score[2] = score;
-+        corner_x[2] = x;
-+        corner_y[2] = y;
-+      }
-+      score = x - y;
-+      if (score > corner_score[1]) {
-+        corner_score[1] = score;
-+        corner_x[1] = x;
-+        corner_y[1] = y;
-+      }
-+      if (score < corner_score[3]) {
-+        corner_score[3] = score;
-+        corner_x[3] = x;
-+        corner_y[3] = y;
-+      }
-+
-+      if (x > 0 && mask[position - 1] == 1) {
-+        mask[position - 1] = 2;
-+        queue[tail++] = position - 1;
-+      }
-+      if (x + 1 < grid_width && mask[position + 1] == 1) {
-+        mask[position + 1] = 2;
-+        queue[tail++] = position + 1;
-+      }
-+      if (y > 0 && mask[position - grid_width] == 1) {
-+        mask[position - grid_width] = 2;
-+        queue[tail++] = position - grid_width;
-+      }
-+      if (y + 1 < grid_height && mask[position + grid_width] == 1) {
-+        mask[position + grid_width] = 2;
-+        queue[tail++] = position + grid_width;
-+      }
-+    }
-+
-+    if (count > best_count) {
-+      int corner;
-+      best_count = count;
-+      for (corner = 0; corner < 4; corner++) {
-+        best_x[corner] = corner_x[corner];
-+        best_y[corner] = corner_y[corner];
-+      }
-+    }
-+  }
-+
-+  if (best_count < grid_size / 20) {
-+    DBG (5, "buffer_sv600_perspective: document was not detected\n");
-+    ret = fixed_page ? SANE_STATUS_NO_DOCS : SANE_STATUS_GOOD;
-+    goto cleanup;
-+  }
-+
-+  for (index = 0; index < 4; index++) {
-+    int coarse_x = min(best_x[index] * step, source_width - 1);
-+    int coarse_y = min(best_y[index] * step, source_height - 1);
-+    int radius = step * 8;
-+    int x_direction = (index == 0 || index == 3) ? 1 : -1;
-+    int y_direction = (index == 0 || index == 1) ? 1 : -1;
-+    int best_score = (index == 0 || index == 3)
-+      ? source_width + source_height + 1
-+      : -source_width - source_height - 1;
-+    int search_y;
-+
-+    corners[index].x = coarse_x;
-+    corners[index].y = coarse_y;
-+    for (search_y = max(1, coarse_y - radius);
-+         search_y <= min(source_height - 2, coarse_y + radius);
-+         search_y++) {
-+      int search_x;
-+      for (search_x = max(1, coarse_x - radius);
-+           search_x <= min(source_width - 2, coarse_x + radius);
-+           search_x++) {
-+        const unsigned char *pixel = s->buffers[side]
-+          + (size_t)search_y * params->bytes_per_line + search_x * 3;
-+        const unsigned char *inside_x = s->buffers[side]
-+          + (size_t)search_y * params->bytes_per_line
-+          + (search_x + x_direction) * 3;
-+        const unsigned char *inside_y = s->buffers[side]
-+          + (size_t)(search_y + y_direction) * params->bytes_per_line
-+          + search_x * 3;
-+        int score;
-+
-+        /* Require two inward neighbours so isolated highlights on the dark
-+         * mat cannot be mistaken for a page corner. */
-+        if (sv600_luminance(pixel) <= threshold
-+            || sv600_luminance(inside_x) <= threshold
-+            || sv600_luminance(inside_y) <= threshold)
-+          continue;
-+        score = (index == 0 || index == 2)
-+          ? search_x + search_y : search_x - search_y;
-+        if (((index == 0 || index == 3) && score < best_score)
-+            || ((index == 1 || index == 2) && score > best_score)) {
-+          best_score = score;
-+          corners[index].x = search_x;
-+          corners[index].y = search_y;
-+        }
-+      }
-+    }
-+  }
-+
-+  {
-+    double area = 0;
-+    int corner;
-+    for (corner = 0; corner < 4; corner++) {
-+      int next = (corner + 1) % 4;
-+      area += corners[corner].x * corners[next].y
-+        - corners[next].x * corners[corner].y;
-+    }
-+    area = fabs(area) / 2;
-+    if (area < source_width * (double)source_height / 5) {
-+      DBG (5, "buffer_sv600_perspective: detected area is too small\n");
-+      ret = fixed_page ? SANE_STATUS_NO_DOCS : SANE_STATUS_GOOD;
-+      goto cleanup;
-+    }
-+  }
-+
-+  output_width = source_width;
-+  output_height = source_height;
-+  output_portrait = source_height >= source_width;
-+  {
-+    int min_x = corners[0].x;
-+    int max_x = corners[0].x;
-+    int min_y = corners[0].y;
-+    int max_y = corners[0].y;
-+    int corner;
-+    int detected_width;
-+    int detected_height;
-+    double long_mm;
-+    double short_mm;
-+    int short_pixels;
-+    int long_pixels;
-+
-+    for (corner = 1; corner < 4; corner++) {
-+      min_x = min(min_x, corners[corner].x);
-+      max_x = max(max_x, corners[corner].x);
-+      min_y = min(min_y, corners[corner].y);
-+      max_y = max(max_y, corners[corner].y);
-+    }
-+    detected_width = max_x - min_x + 1;
-+    detected_height = max_y - min_y + 1;
-+    output_portrait = detected_height >= detected_width;
-+    long_mm = max(detected_width, detected_height) * 25.4
-+      / max(s->resolution_x, s->resolution_y);
-+    short_mm = min(detected_width, detected_height) * 25.4
-+      / max(s->resolution_x, s->resolution_y);
-+
-+    if (fixed_page == 4) {
-+      short_pixels = 2479;
-+      long_pixels = 3508;
-+      output_width = output_portrait ? short_pixels : long_pixels;
-+      output_height = output_portrait ? long_pixels : short_pixels;
-+    }
-+    else if (fixed_page == 5) {
-+      short_pixels = 1747;
-+      long_pixels = 2481;
-+      output_width = output_portrait ? short_pixels : long_pixels;
-+      output_height = output_portrait ? long_pixels : short_pixels;
-+    }
-+    /* A landscape A4 placed near the camera has a much deeper projected
-+     * bounding box than its physical 210 mm side (about 244 mm in practice).
-+     * Keep enough tolerance to recognize that trapezoid as A4 before the
-+     * homography restores the exact 297:210 aspect ratio. */
-+    else if (long_mm >= 270 && long_mm <= 320
-+        && short_mm >= 180 && short_mm <= 260) {
-+      short_pixels = (int)(210.0 * s->resolution_x / 25.4 + 0.5);
-+      long_pixels = (int)(297.0 * s->resolution_y / 25.4 + 0.5);
-+      output_width = output_portrait ? short_pixels : long_pixels;
-+      output_height = output_portrait ? long_pixels : short_pixels;
-+    }
-+    else if (long_mm >= 390 && long_mm <= 440
-+             && short_mm >= 270 && short_mm <= 320) {
-+      short_pixels = (int)(297.0 * s->resolution_x / 25.4 + 0.5);
-+      long_pixels = (int)(420.0 * s->resolution_y / 25.4 + 0.5);
-+      output_width = output_portrait ? short_pixels : long_pixels;
-+      output_height = output_portrait ? long_pixels : short_pixels;
-+    }
-+  }
-+
-+  output_bytes = (size_t)output_width * output_height * 3;
-+  if (output_bytes > (size_t)s->buff_tot[side]) {
-+    DBG (5, "buffer_sv600_perspective: corrected image exceeds buffer\n");
-+    ret = fixed_page ? SANE_STATUS_NO_MEM : SANE_STATUS_GOOD;
-+    goto cleanup;
-+  }
-+  if (!sv600_solve_perspective(corners, output_width, output_height,
-+                               coefficients)) {
-+    DBG (5, "buffer_sv600_perspective: singular transform\n");
-+    ret = fixed_page ? SANE_STATUS_INVAL : SANE_STATUS_GOOD;
-+    goto cleanup;
-+  }
-+
-+  corrected = malloc(output_bytes);
-+  if (!corrected) {
-+    DBG (5, "buffer_sv600_perspective: cannot allocate output image\n");
-+    ret = SANE_STATUS_NO_MEM;
-+    goto cleanup;
-+  }
-+
-+  sv600_render_perspective(s, side, corrected,
-+                           source_width, source_height,
-+                           output_width, output_height, output_portrait,
-+                           coefficients, 0, 0, 0, 0);
-+  crop_left = crop_top = crop_right = crop_bottom = 0;
-+  if (!fixed_page) {
-+    sv600_detect_clean_crop(corrected, output_width, output_height,
-+                            max(1, (int)(s->resolution_x / 25.4 + 0.5)),
-+                            max(1, (int)(s->resolution_y / 25.4 + 0.5)),
-+                            &crop_left, &crop_top,
-+                            &crop_right, &crop_bottom);
-+    if (crop_left || crop_top || crop_right || crop_bottom)
-+      sv600_render_perspective(s, side, corrected,
-+                               source_width, source_height,
-+                               output_width, output_height, output_portrait,
-+                               coefficients,
-+                               crop_left, crop_top,
-+                               crop_right, crop_bottom);
-+  }
-+
-+  /* The user-facing scan window carries the orientation selected in the
-+   * application.  A sideways A4 is acquired in its natural landscape shape
-+   * for maximum SV600 quality, then rotated by moving whole RGB pixels.  This
-+   * adds no resampling pass and therefore cannot soften text.  With the usual
-+   * placement (the top of the page at the camera's right), portrait output is
-+   * a counter-clockwise rotation. */
-+  if (requested_portrait != output_portrait) {
-+    int original_width = output_width;
-+    int original_height = output_height;
-+    int y;
-+
-+    if (requested_portrait) {
-+      for (y = 0; y < original_height; y++) {
-+        int x;
-+        for (x = 0; x < original_width; x++) {
-+          const unsigned char *source = corrected
-+            + ((size_t)y * original_width + x) * 3;
-+          unsigned char *destination = s->buffers[side]
-+            + ((size_t)(original_width - 1 - x) * original_height + y) * 3;
-+          memcpy(destination, source, 3);
-+        }
-+      }
-+      rotation = 270;
-+    }
-+    else {
-+      for (y = 0; y < original_height; y++) {
-+        int x;
-+        for (x = 0; x < original_width; x++) {
-+          const unsigned char *source = corrected
-+            + ((size_t)y * original_width + x) * 3;
-+          unsigned char *destination = s->buffers[side]
-+            + ((size_t)x * original_height + original_height - 1 - y) * 3;
-+          memcpy(destination, source, 3);
-+        }
-+      }
-+      rotation = 90;
-+    }
-+    output_width = original_height;
-+    output_height = original_width;
-+  }
-+  else
-+    memcpy(s->buffers[side], corrected, output_bytes);
-+  params->pixels_per_line = output_width;
-+  params->bytes_per_line = output_width * 3;
-+  params->lines = output_height;
-+  update_u_params(s);
-+  s->bytes_rx[side] = (int)output_bytes;
-+  s->buff_rx[side] = (int)output_bytes;
-+
-+  DBG (15, "buffer_sv600_perspective: threshold=%d corners="
-+       "%.0f:%.0f,%.0f:%.0f,%.0f:%.0f,%.0f:%.0f output=%dx%d "
-+       "crop=%d:%d:%d:%d rotation=%d\n",
-+       threshold,
-+       corners[0].x, corners[0].y,
-+       corners[1].x, corners[1].y,
-+       corners[2].x, corners[2].y,
-+       corners[3].x, corners[3].y,
-+       output_width, output_height,
-+       crop_left, crop_top, crop_right, crop_bottom, rotation);
-+
-+cleanup:
-+  free(corrected);
-+  free(queue);
-+  free(mask);
-+  DBG (10, "buffer_sv600_perspective: finish\n");
-+  return ret;
-+}
-+
+ /* Look in image for disconnected 'spots' of the requested size.
+  * Replace the spots with the average color of the surrounding pixels.
+  * FIXME: should we do this before we binarize instead of after? */
 diff --git a/backend/fujitsu.h b/backend/fujitsu.h
-index 6c42ff81..591f2f9b 100644
+index 6c42ff81ba502d8b14349702723b23f93c9e82ee..6c0404f8d668f38cf5153771c9181fb40f23f2f0 100644
 --- a/backend/fujitsu.h
 +++ b/backend/fujitsu.h
-@@ -812,0 +813,13 @@ static SANE_Status mode_select_auto (struct fujitsu *s);
+@@ -810,6 +810,20 @@ static SANE_Status mode_select_prepick (struct fujitsu *s);
+ 
+ static SANE_Status mode_select_auto (struct fujitsu *s);
+ 
 +static SANE_Status sv600_prepare_scan (struct fujitsu *s);
 +static SANE_Status buffer_sv600_factory_remap(struct fujitsu *s, int side,
 +  int output_height);
-+static SANE_Status buffer_sv600_fixed_flat(struct fujitsu *s, int side,
-+  int page, int requested_portrait);
++static SANE_Status buffer_sv600_vendor_geometry(struct fujitsu *s, int side,
++  int page);
++static SANE_Status buffer_sv600_vendor_resize(struct fujitsu *s, int side,
++  int resolution);
++static SANE_Status buffer_sv600_factory_gamma(struct fujitsu *s, int side);
++static SANE_Status buffer_sv600_factory_finish(struct fujitsu *s,
++  int side);
++static SANE_Status buffer_sv600_rotate_portrait(struct fujitsu *s, int side);
 +static SANE_Status buffer_sv600_align_binary_width(struct fujitsu *s,
 +  int side);
-+static void sv600_render_perspective(struct fujitsu *s, int side,
-+  unsigned char *corrected, int source_width, int source_height,
-+  int output_width, int output_height, int output_portrait,
-+  const double coefficients[8], int crop_left, int crop_top,
-+  int crop_right, int crop_bottom);
 +
-@@ -852,0 +866,2 @@ static SANE_Status buffer_crop(struct fujitsu *s, int side);
-+static SANE_Status buffer_sv600_perspective(struct fujitsu *s, int side,
-+  int requested_portrait, int fixed_page);
+ static SANE_Status set_sleep_mode(struct fujitsu *s);
+ static SANE_Status set_off_mode(struct fujitsu *s);
+ 
