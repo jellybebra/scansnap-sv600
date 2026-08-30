@@ -27,6 +27,8 @@ fi
 for required in \
     patches/0001-fujitsu-sv600-prepare-scan.patch \
     patches/0002-fujitsu-sv600-format-travel.patch \
+    patches/0003-fujitsu-sv600-edge-background-whitening.patch \
+    data/sv600-background-cleanup.inc \
     data/sv600-optical-map-deltas.inc \
     data/sv600-srgb-lut.inc \
     tools/windows/run_sv600_factory_pipeline.c \
@@ -72,7 +74,8 @@ git clone --filter=blob:none --no-checkout \
 git -C "$source_dir" checkout --detach "$sane_commit"
 for patch_file in \
     0001-fujitsu-sv600-prepare-scan.patch \
-    0002-fujitsu-sv600-format-travel.patch
+    0002-fujitsu-sv600-format-travel.patch \
+    0003-fujitsu-sv600-edge-background-whitening.patch
 do
     (
         cd "$source_dir"
@@ -84,6 +87,8 @@ install -m 0644 "$project_root/data/sv600-optical-map-deltas.inc" \
     "$source_dir/backend/sv600-optical-map-deltas.inc"
 install -m 0644 "$project_root/data/sv600-srgb-lut.inc" \
     "$source_dir/backend/sv600-srgb-lut.inc"
+install -m 0644 "$project_root/data/sv600-background-cleanup.inc" \
+    "$source_dir/backend/sv600-background-cleanup.inc"
 git -C "$source_dir" diff --check
 
 (

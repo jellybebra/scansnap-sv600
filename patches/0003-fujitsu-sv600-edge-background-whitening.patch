@@ -1,0 +1,42 @@
+diff --git a/backend/fujitsu.c b/backend/fujitsu.c
+index 7da4993a..b2c5d1e4 100644
+--- a/backend/fujitsu.c
++++ b/backend/fujitsu.c
+@@ -7469,6 +7469,14 @@ sane_start (SANE_Handle handle)
+              ret);
+         goto errors;
+       }
++      if (sv600_fixed_page) {
++        ret = buffer_sv600_whiten_edge_background(s, s->side);
++        if (ret != SANE_STATUS_GOOD) {
++          DBG (5, "sane_start: ERROR: SV600 background cleanup failed %d\n",
++               ret);
++          goto errors;
++        }
++      }
+     }
+     if (is_sv600 && s->u_mode == MODE_LINEART) {
+       ret = buffer_sv600_align_binary_width(s, s->side);
+@@ -11362,6 +11370,8 @@ buffer_sv600_factory_finish(struct fujitsu *s, int side)
+   return SANE_STATUS_GOOD;
+ }
+-
++
++#include "sv600-background-cleanup.inc"
++
+ /* SANE's packed 1-bit path requires a whole number of pixels per byte.  The
+  * factory fixed-size RGB dimensions are sometimes odd, so remove at most the
+  * seven rightmost pixels before the generic RGB-to-Lineart conversion. */
+diff --git a/backend/fujitsu.h b/backend/fujitsu.h
+index 0da4ebdf..352d45d7 100644
+--- a/backend/fujitsu.h
++++ b/backend/fujitsu.h
+@@ -821,6 +821,8 @@ static SANE_Status buffer_sv600_vendor_resize(struct fujitsu *s, int side,
+ static SANE_Status buffer_sv600_factory_gamma(struct fujitsu *s, int side);
+ static SANE_Status buffer_sv600_factory_finish(struct fujitsu *s,
+   int side);
++static SANE_Status buffer_sv600_whiten_edge_background(struct fujitsu *s,
++  int side);
+ static SANE_Status buffer_sv600_rotate_portrait(struct fujitsu *s, int side);
+ static SANE_Status buffer_sv600_align_binary_width(struct fujitsu *s,
+   int side);
